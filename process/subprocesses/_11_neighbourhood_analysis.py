@@ -464,13 +464,13 @@ FREQUENT_PT_HEADWAY = 20
 
 # Default condition identifying low-stress ('safe') walking links for the
 # 'safe routes to public transport' indicator, evaluated against the network
-# edges.  Only links whose recorded width is at least 1.5 m are traversed;
-# links without a recorded width are excluded.  Overridable per study region
-# via the 'safe_walking_edges' setting under 'network' in its configuration.
+# edges.  Footpath width is not used to filter links, because width is mapped
+# too inconsistently to exclude links that have no recorded width; the
+# proportion of links with width information is reported separately in the
+# indicator caption.  Overridable per study region via the 'safe_walking_edges'
+# setting under 'network' in its configuration.
 DEFAULT_SAFE_WALKING_EDGES = (
     "highway IN ('footway','path','pedestrian','living_street','residential')"
-    " AND COALESCE(NULLIF(substring(width::text from '[0-9]+[.]?[0-9]*'), '')"
-    '::numeric, 0) >= 1.5'
 )
 
 
@@ -777,7 +777,7 @@ def _gentle_walking_predicate(r):
 
 def _safe_walking_predicate(r):
     """Configured condition identifying low-stress walking links, or None when
-    it cannot be evaluated for this study region (no network width attribute)."""
+    it cannot be evaluated for this study region."""
     network_config = r.config.get('network') or {}
     predicate = (
         network_config.get('safe_walking_edges') or DEFAULT_SAFE_WALKING_EDGES
@@ -820,8 +820,10 @@ def calculate_safe_walking_access(r, engine, distance):
 
     An iteration of the frequent public transport and daily living access
     indicators, routed only over links considered safe for an older person to
-    walk along, as defined by the configured condition on footpath width (see
-    ``DEFAULT_SAFE_WALKING_EDGES`` and the region's ``network`` settings).
+    walk along, as defined by the configured condition on pedestrian link type
+    and gentle gradient (see ``DEFAULT_SAFE_WALKING_EDGES`` and the region's
+    ``network`` settings).  Footpath width is not used to exclude links; its
+    coverage is summarised separately in the report caption.
 
     Returns the network distance from every node to the nearest frequent public
     transport stop, and to the nearest fresh food market, convenience store and
@@ -1058,6 +1060,14 @@ def calculate_sample_point_indicators(
                     computed[var] = read(columns).sum(axis=axis)
                 if formula == 'max':
                     computed[var] = read(columns).max(axis=axis)
+                if formula == 'all':
+                    computed[var] = (
+                        read(columns)
+                        .fillna(0)
+                        .astype(bool)
+                        .all(axis=axis)
+                        .astype(int)
+                    )
                 if formula == 'sum_of_z_scores':
                     block = read(columns)
                     computed[var] = ((block - block.mean()) / block.std()).sum(
