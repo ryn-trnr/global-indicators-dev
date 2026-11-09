@@ -85,6 +85,13 @@ def format_month_day(iso_date):
     return f'{date.strftime("%B")} {day}{suffix}'
 
 
+# Source of the GUHVI land surface temperature (LST) input.  ECOSTRESS is a
+# temporary alternative to the Landsat thermal archive for the heat exposure
+# index; set this to 'LANDSAT' to restore the Landsat 7/8/9 implementation.
+# ECOSTRESS provides LST only, so land surface albedo (the other originally
+# Landsat-derived GUHVI input) continues to come from Landsat.
+GUHVI_LST_SOURCE = 'ECOSTRESS'
+
 # Landsat missions used for the heat exposure inputs, in order of preference.
 # The newest mission whose operational period covers the entire five-year
 # composite is used, so that the surface temperature and albedo inputs come
@@ -1164,7 +1171,9 @@ def guhvi_analysis(r):  # noqa: C901
     vulnerable population, child dependency ratio, SHDI and IMR) are built in
     Earth Engine and downloaded as a single multi-band GeoTIFF; the per-cell
     statistics, coastline overlap, normalisation, composites and quintiles are
-    then computed locally.
+    then computed locally.  LST comes from ECOSTRESS while the module-level
+    ``GUHVI_LST_SOURCE`` is set to 'ECOSTRESS' (the temporary comparison
+    configuration); land surface albedo continues to come from Landsat.
 
     1. Generate Heat Exposure Index (HEI), Heat Sensitivity Index (HSI), Adapative Capability Index (ACI).
     2. Apply normalisation and quintile operation to determine overall heat vulnerability index.
@@ -1444,7 +1453,7 @@ def guhvi_analysis(r):  # noqa: C901
 
     # Apply the hottest third of the year to the target year and the four
     # preceding years.  Pooling the same seasonal window across five years
-    # greatly increases the number of clear Landsat/Sentinel observations and
+    # greatly increases the number of clear satellite observations and
     # prevents a single cloudy year from determining the result.
     hottest_years = list(range(target_year - 4, target_year + 1))
     hottest_date_ranges = [
@@ -1473,10 +1482,12 @@ def guhvi_analysis(r):  # noqa: C901
         f'({hottest_years_label}, five-year composite)',
     )
 
-    # Use Landsat 8 and Landsat 9 together wherever both cover a window, so
-    # that their combined revisit frequency maximises the number of clear
-    # observations in the composite.  Landsat 7 is used only for windows
-    # neither newer mission covers.
+    # Land surface albedo is still derived from Landsat (see below), as
+    # ECOSTRESS has no optical bands from which to calculate it.  Use Landsat 8
+    # and Landsat 9 together wherever both cover a window, so that their
+    # combined revisit frequency maximises the number of clear observations in
+    # the composite.  Landsat 7 is used only for windows neither newer mission
+    # covers.
     landsat_assignments = sorted(
         select_landsat_sensors(hottest_date_ranges),
         key=lambda assignment: assignment['sensor']['name'],
@@ -1484,7 +1495,7 @@ def guhvi_analysis(r):  # noqa: C901
     landsat_sensor_label = ' + '.join(
         assignment['sensor']['name'] for assignment in landsat_assignments
     )
-    print(f'\nLandsat sensors for heat exposure: {landsat_sensor_label}')
+    print(f'\nLandsat sensors for land surface albedo: {landsat_sensor_label}')
     for assignment in landsat_assignments:
         sensor = assignment['sensor']
         print(
@@ -1494,61 +1505,150 @@ def guhvi_analysis(r):  # noqa: C901
                 for start, end in assignment['ranges']
             ),
         )
-    # LAND SURFACE TEMPERATURE (LST) - LANDSAT SR
 
-    # Function to mask clouds from any Landsat Collection 2, Level 2 image.
-    # QA_PIXEL bits 0-4 (fill, dilated cloud, cirrus, cloud and cloud shadow)
-    # must all be clear, and QA_RADSAT must be zero (no saturated pixels).
-    # No separate cloud-confidence threshold is applied.  Band names and
-    # scaling are shared by Landsat 7, 8 and 9; only the thermal band name
-    # differs (ST_B6 for Landsat 7, ST_B10 for 8 and 9).
-    def mask_landsat_sr_clouds(image):
-        qa_mask = image.select('QA_PIXEL').bitwiseAnd(int('11111', 2)).eq(0)
-        saturation_mask = image.select('QA_RADSAT').eq(0)
+    # LAND SURFACE TEMPERATURE (LST)
+    if GUHVI_LST_SOURCE == 'ECOSTRESS':
+        lst_sensor_label = 'ECOSTRESS'
 
-        optical_bands = image.select('SR_B.*').multiply(0.0000275).add(-0.2)
-        thermal_bands = image.select('ST_B.*').multiply(0.00341802).add(149.0)
+        # Mask poor-quality, cloudy and interpolated ECOSTRESS pixels.  QC
+        # bit 0 = good LST quality, bit 1 = good LST error, bit 2 = not
+        # temporally interpolated, bit 3 = clear sky, bit 4 = not an outlier
+        # and bit 5 = slope consistent.  The separate cloud band's bit 0 is
+        # also cleared.  (The documented snow/ice and land/water bits 6-7 are
+        # not used: in the Earth Engine collection they are set for every
+        # pixel, including clear land observations, and would mask all data.)
+        def mask_ecostress_lst(image):
+            qc = image.select('QC')
+            good_quality = qc.bitwiseAnd(1 << 0).eq(0)
+            good_error = qc.bitwiseAnd(1 << 1).eq(0)
+            not_interpolated = qc.bitwiseAnd(1 << 2).eq(0)
+            clear_sky = qc.bitwiseAnd(1 << 3).eq(0)
+            not_outlier = qc.bitwiseAnd(1 << 4).eq(0)
+            slope_consistent = qc.bitwiseAnd(1 << 5).eq(0)
+            cloud_free = image.select('cloud').bitwiseAnd(1).eq(0)
+            mask = (
+                good_quality.And(good_error)
+                .And(not_interpolated)
+                .And(clear_sky)
+                .And(not_outlier)
+                .And(slope_consistent)
+                .And(cloud_free)
+            )
+            lst = image.select('LST').subtract(273.15).rename('LST')
+            # Overwrite the original Kelvin LST band (rather than adding a
+            # duplicate band of the same name, which select('LST') would not
+            # return) so the collection exposes the Celsius values.
+            return image.addBands(lst, None, True).updateMask(mask)
 
-        return (
-            image.addBands(optical_bands, None, True)
-            .addBands(thermal_bands, None, True)
-            .updateMask(qa_mask)
-            .updateMask(saturation_mask)
+        # ECOSTRESS acquires at varying times of day.  Retain daytime overpasses
+        # only, approximated as local solar time 09:00-17:00 from the UTC
+        # acquisition time and the study region's longitude (an ECOSTRESS scene
+        # spans only a few degrees of longitude, so one offset per scene is
+        # sufficient).
+        study_longitude = ee.Number(
+            urban_study_region_fc.geometry(1).centroid(1).coordinates().get(0),
         )
 
-    # Calculate LST, using the thermal band appropriate to the mission
-    def calculate_lst(image, thermal_band):
-        st = image.select(thermal_band)
-        lst = st.subtract(273.15).rename('LST')
-        return image.addBands(lst)
+        def add_local_solar_hour(image):
+            utc_hour = ee.Date(
+                image.get('system:time_start'),
+            ).getRelative('hour', 'day')
+            return image.set(
+                'local_solar_hour',
+                utc_hour.add(study_longitude.divide(15)),
+            )
 
-    def landsat_lst_collection_for(assignment):
-        """Return LST images for one mission and its assigned windows."""
-        sensor = assignment['sensor']
-        collection = filter_date_ranges(
-            ee.ImageCollection(sensor['sr_collection']).filterBounds(
-                bounding_box_1600m,
-            ),
-            assignment['ranges'],
-        ).map(mask_landsat_sr_clouds)
-        return collection.map(
-            lambda image: calculate_lst(
-                image,
-                sensor['thermal_band'],
-            ),
-        ).select('LST')
+        ecostress_collection = (
+            filter_date_ranges(
+                ee.ImageCollection('NASA/ECOSTRESS/L2T_LSTE/V2')
+                .filterBounds(bounding_box_1600m)
+                .map(add_local_solar_hour)
+                .filter(
+                    ee.Filter.And(
+                        ee.Filter.gte('local_solar_hour', 9),
+                        ee.Filter.lte('local_solar_hour', 17),
+                    ),
+                ),
+                hottest_date_ranges,
+            )
+            .map(mask_ecostress_lst)
+        )
+        ecostress_scene_count = ecostress_collection.size().getInfo()
+        print(
+            f'\nLST source: ECOSTRESS ({ecostress_scene_count} daytime '
+            'scenes in the five seasonal windows)',
+        )
+        if ecostress_scene_count == 0:
+            raise ValueError(
+                'No daytime ECOSTRESS scenes were found for the hottest-third '
+                'seasonal windows.  ECOSTRESS coverage is limited to '
+                'approximately 52°N-52°S; use the LANDSAT LST source for this '
+                'study region.',
+            )
+        mean_lst = ecostress_collection.select('LST').mean()
+    else:
+        lst_sensor_label = landsat_sensor_label
 
-    # Build and merge the LST collections for all selected missions
-    lst_collections = [
-        landsat_lst_collection_for(assignment)
-        for assignment in landsat_assignments
-    ]
-    collection_with_lst = lst_collections[0]
-    for collection in lst_collections[1:]:
-        collection_with_lst = collection_with_lst.merge(collection)
+        # Function to mask clouds from any Landsat Collection 2, Level 2 image.
+        # QA_PIXEL bits 0-4 (fill, dilated cloud, cirrus, cloud and cloud
+        # shadow) must all be clear, and QA_RADSAT must be zero (no saturated
+        # pixels).  No separate cloud-confidence threshold is applied.  Band
+        # names and scaling are shared by Landsat 7, 8 and 9; only the thermal
+        # band name differs (ST_B6 for Landsat 7, ST_B10 for 8 and 9).
+        def mask_landsat_sr_clouds(image):
+            qa_mask = image.select('QA_PIXEL').bitwiseAnd(
+                int('11111', 2),
+            ).eq(0)
+            saturation_mask = image.select('QA_RADSAT').eq(0)
 
-    # Calculate the mean LST across all scenes in the five seasonal windows
-    mean_lst = collection_with_lst.mean()
+            optical_bands = (
+                image.select('SR_B.*').multiply(0.0000275).add(-0.2)
+            )
+            thermal_bands = (
+                image.select('ST_B.*').multiply(0.00341802).add(149.0)
+            )
+
+            return (
+                image.addBands(optical_bands, None, True)
+                .addBands(thermal_bands, None, True)
+                .updateMask(qa_mask)
+                .updateMask(saturation_mask)
+            )
+
+        # Calculate LST, using the thermal band appropriate to the mission
+        def calculate_lst(image, thermal_band):
+            st = image.select(thermal_band)
+            lst = st.subtract(273.15).rename('LST')
+            return image.addBands(lst)
+
+        def landsat_lst_collection_for(assignment):
+            """Return LST images for one mission and its assigned windows."""
+            sensor = assignment['sensor']
+            collection = filter_date_ranges(
+                ee.ImageCollection(sensor['sr_collection']).filterBounds(
+                    bounding_box_1600m,
+                ),
+                assignment['ranges'],
+            ).map(mask_landsat_sr_clouds)
+            return collection.map(
+                lambda image: calculate_lst(
+                    image,
+                    sensor['thermal_band'],
+                ),
+            ).select('LST')
+
+        # Build and merge the LST collections for all selected missions
+        lst_collections = [
+            landsat_lst_collection_for(assignment)
+            for assignment in landsat_assignments
+        ]
+        collection_with_lst = lst_collections[0]
+        for collection in lst_collections[1:]:
+            collection_with_lst = collection_with_lst.merge(collection)
+
+        # Calculate the mean LST across all scenes in the five seasonal windows
+        mean_lst = collection_with_lst.mean()
+        print(f'\nLST source: {lst_sensor_label}')
 
     # Clip the LST image to the cityBoundary
     lst_clipped = mean_lst.clip(urban_study_region_fc)
@@ -1994,16 +2094,13 @@ def guhvi_analysis(r):  # noqa: C901
     # whereas the values the tables must reproduce are the mean of the finer
     # pixels within each cell (as reduceRegions previously computed).
     clean_city = clean_city_name_for_gee(r.config['name'])
-    sensor_slug = '_'.join(
-        assignment['sensor']['name'].replace(' ', '')
-        for assignment in landsat_assignments
-    )
+    lst_sensor_slug = lst_sensor_label.replace(' + ', '_').replace(' ', '')
     out_dir = os.path.join(r.config['region_dir'], 'guhvi_tiles')
     os.makedirs(out_dir, exist_ok=True)
     out_tif = os.path.join(
         out_dir,
         f'GHSCI_GUHVI_Raster_{clean_city}_{GUHVI_DOWNLOAD_SCALE}m_'
-        f'{target_year}_{sensor_slug}_hotseason'
+        f'{target_year}_{lst_sensor_slug}_hotseason'
         f'{len(hottest_date_ranges)}yr.tif',
     )
 
@@ -2195,13 +2292,13 @@ def guhvi_analysis(r):  # noqa: C901
             gdf['hottest_end_date'] = hottest_end_date
             gdf['hottest_years'] = hottest_years_label
             gdf['hottest_window'] = hottest_window
-            gdf['landsat_sensor'] = landsat_sensor_label
+            gdf['lst_sensor'] = lst_sensor_label
             text_columns = {
                 'hottest_start_date',
                 'hottest_end_date',
                 'hottest_years',
                 'hottest_window',
-                'landsat_sensor',
+                'lst_sensor',
             }
             band_columns.extend(sorted(text_columns))
 
