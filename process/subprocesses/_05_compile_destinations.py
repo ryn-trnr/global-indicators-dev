@@ -131,23 +131,20 @@ def compile_osm_destinations(r, skip_dest_names=None):
                     .values.tolist(),
                 )
                 dest_condition.append(clause)
-            if condition != 'NOT':
-                clause = ' AND '.join(
-                    ghsci.df_osm_dest[
+            if condition == 'NOT':
+                not_clauses = [
+                    (
+                        f'({x.key} IS NULL)'
+                        if x.value == 'NULL'
+                        else f"({x.key} != '{x.value}' OR {x.key} IS NULL)"
+                    )
+                    for x in ghsci.df_osm_dest[
                         (ghsci.df_osm_dest['dest_name'] == dest)
                         & (ghsci.df_osm_dest['pre-condition'] == 'NOT')
-                    ]
-                    .apply(
-                        lambda x: (
-                            f'{x.key} IS NOT NULL'
-                            if x.value == 'NULL'
-                            else f"{x.key} != '{x.value}' OR access IS NULL"
-                        ),
-                        axis=1,
-                    )
-                    .values.tolist(),
-                )
-                dest_condition.append(clause)
+                    ].itertuples()
+                ]
+                if not_clauses:
+                    dest_condition.append(' AND '.join(not_clauses))
         dest_condition = [x for x in dest_condition if x != '']
         if len(dest_condition) == 1:
             dest_condition = dest_condition[0]

@@ -547,17 +547,33 @@ DESTINATION_PHRASES = {
     ),
     'pt_safe_freq_20': (
         'frequent public transport (average daytime weekday service frequency '
-        'of 20 minutes or better), reached along low-stress walking links of '
-        'at least 1.5 metres width'
+        'of 20 minutes or better), reached along low-stress walking links with '
+        'a gentle gradient'
     ),
     'daily_living_all': (
         'all daily living destinations (fresh food market or supermarket, '
         'convenience store and public transport)'
     ),
+    'daily_living_health_services': (
+        'both all daily living destinations (fresh food market or supermarket, '
+        'convenience store and public transport) and health services'
+    ),
+    'public_toilets': (
+        'public toilets (source: OpenStreetMap amenity=toilets, excluding '
+        'private or non-public toilets)'
+    ),
+    'rest_points': (
+        'rest points (benches, picnic tables and shelters; source: '
+        'OpenStreetMap)'
+    ),
+    'public_toilets_rest_points': (
+        'both public toilets and rest points (benches, picnic tables and '
+        'shelters)'
+    ),
     'safe_daily_living_all': (
         'all daily living destinations (fresh food market or supermarket, '
         'convenience store and public transport), reached along low-stress '
-        'walking links of at least 1.5 metres width'
+        'walking links with a gentle gradient'
     ),
     'pt_any': (
         'any public transport stop (best result of GTFS and '
@@ -626,9 +642,9 @@ URBAN_HEAT_PHRASES = {
     ),
     'land_surface_temp_c': (
         'Land surface temperature (°C): the temperature of the Earth’s '
-        'surface, indicating the lived experience of heat (Landsat 7/8/9 '
-        'surface reflectance; hottest third of the year composited over '
-        'the target year and four preceding years)'
+        'surface, indicating the lived experience of heat (ECOSTRESS '
+        'daytime land surface temperature; hottest third of the year '
+        'composited over the target year and four preceding years)'
     ),
     'sensitivity_index': (
         'Heat Sensitivity Index (HSI): the equally weighted heat '
@@ -1578,12 +1594,11 @@ CATEGORY_NOTES = {
         'default, following Turner et al. (2025), "Development and '
         'validation of the Global Urban Heat Vulnerability Index '
         '(GUHVI)", Urban Climate 64: 102716.  Land surface temperature '
-        'and albedo are composited over the hottest third of the year '
-        'in the target year and the four preceding years, combining '
-        'Landsat 7, 8 and 9 observations wherever the missions cover '
-        'the seasonal windows; Landsat 7 is included up to its Earth '
-        'Engine archive end date of January 2024.  Inputs are aligned '
-        'so that higher values indicate '
+        'uses ECOSTRESS daytime observations, while albedo uses Landsat 7, 8 '
+        'and 9 observations; both are composited over the hottest third of '
+        'the year in the target year and the four preceding years.  Landsat '
+        '7 is included up to its Earth Engine archive end date of January '
+        '2024.  Inputs are aligned so that higher values indicate '
         'greater heat vulnerability.  Each measure below is sampled at '
         'sample points (sp_ prefix), averaged for each grid cell or '
         'custom area (no prefix), and population weighted for the city '

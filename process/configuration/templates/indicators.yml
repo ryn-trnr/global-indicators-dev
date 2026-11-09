@@ -23,6 +23,21 @@ nearest_node_analyses:
         - pt_osm_any
         - health_services
         - community_facilities
+    Public toilets and rest points:
+        categories:
+        - public_toilets
+        - rest_points
+        category_field: dest_name
+        filter_field: null
+        filter_iterations: null
+        geopackage: '{gpkg}'
+        layers:
+        - destinations
+        notes: Public toilets are amenity=toilets excluding access=private/no;
+            rest points are benches, picnic tables and shelters.
+        output_names:
+        - public_toilets
+        - rest_points
     Public open space:
         categories: []
         category_field: null
@@ -74,6 +89,20 @@ sample_point_analyses:
             columns:
             - sp_daily_living_score
             formula: greater_than_or_equal_to(3)
+    Access to all daily living destinations and health services:
+        sp_access_daily_living_health_services_score:
+            axis: 1
+            columns:
+            - sp_access_daily_living_all_score
+            - sp_access_health_services_score
+            formula: all
+    Access to public toilets and rest points:
+        sp_access_public_toilets_rest_points_score:
+            axis: 1
+            columns:
+            - sp_access_public_toilets_score
+            - sp_access_rest_points_score
+            formula: all
     Safe daily living score:
         sp_safe_daily_living_score:
             axis: 1
@@ -125,6 +154,8 @@ output:
         - sp_local_nh_avg_intersection_density
         - sp_daily_living_score
         - sp_access_daily_living_all_score
+        - sp_access_daily_living_health_services_score
+        - sp_access_public_toilets_rest_points_score
         - sp_access_safe_daily_living_all_score
         - sp_walkability_index
     neighbourhood_variables:
@@ -146,6 +177,8 @@ output:
         - local_nh_intersection_density
         - local_daily_living
         - pct_access_400m_daily_living_all_score
+        - pct_access_400m_daily_living_health_services_score
+        - pct_access_400m_public_toilets_rest_points_score
         - pct_access_400m_safe_daily_living_all_score
         - local_walkability
     city_variables:
@@ -167,6 +200,8 @@ output:
         - pop_nh_intersection_density
         - pop_daily_living
         - pop_pct_access_400m_daily_living_all_score
+        - pop_pct_access_400m_daily_living_health_services_score
+        - pop_pct_access_400m_public_toilets_rest_points_score
         - pop_pct_access_400m_safe_daily_living_all_score
         - pop_walkability
     extra_unweighted_vars:
@@ -263,12 +298,14 @@ report:
             overlay:
                 layer: aos_public
                 where: "aos_ha_public > 1.5"
+            overlay_phrase: Large public open space
         pct_access_400m_public_open_space_any_score:
             label: Percentage of population with access to public open space
             outfile: 'pct_access_400m_public_open_space_any_score_{language}.jpg'
             range: [-0,100]
             tick_labels: ['{No}','{Yes}']
             overlay: aos_public
+            overlay_phrase: Public open space
         pct_access_400m_pt_any_score:
             label: Percentage of population with access to any public transport stop or station
             outfile: 'pct_access_400m_pt_any_score_{language}.jpg'
@@ -284,6 +321,22 @@ report:
             overlay:
                 layer: destinations
                 where: "dest_name IN ('fresh_food_market','convenience','pt_any')"
+        pct_access_400m_daily_living_health_services_score:
+            label: Percentage of population with access to daily living destinations and health services
+            outfile: 'pct_access_400m_daily_living_health_services_score_{language}.jpg'
+            range: [-0,100]
+            tick_labels: ['{No}','{Yes}']
+            overlay:
+                layer: destinations
+                where: "dest_name IN ('fresh_food_market','convenience','pt_any','health_services')"
+        pct_access_400m_public_toilets_rest_points_score:
+            label: Percentage of population with access to public toilets and rest points
+            outfile: 'pct_access_400m_public_toilets_rest_points_score_{language}.jpg'
+            range: [-0,100]
+            tick_labels: ['{No}','{Yes}']
+            overlay:
+                layer: destinations
+                where: "dest_name IN ('public_toilets','rest_points')"
         pct_access_400m_safe_daily_living_all_score:
             label: Percentage of population with access to all daily living destinations along safe walking routes
             outfile: 'pct_access_400m_safe_daily_living_all_score_{language}.jpg'
