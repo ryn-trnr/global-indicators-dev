@@ -4,6 +4,7 @@ Report functions.
 Define functions used for formatting and saving indicator reports.
 """
 
+import copy
 import json
 import os
 import re
@@ -82,6 +83,36 @@ def _gentle_network_suffix(r):
     return GENTLE_NETWORK_SUFFIX if network.get('elevation') else ''
 
 
+GENTLE_NETWORK_REFERENCE = re.compile(
+    r'[ \t]*(?:using|via)[ \t]+the[ \t]+gentle[ -]+access[ \t]+network\b',
+    re.IGNORECASE,
+)
+
+
+def _strip_gentle_network_references(value):
+    """Remove references to the gentle access network from report text."""
+    if isinstance(value, str):
+        cleaned = GENTLE_NETWORK_REFERENCE.sub('', value)
+        cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+        return re.sub(r'[ \t]+([.,;:])', r'\1', cleaned)
+    if isinstance(value, dict):
+        return {
+            key: _strip_gentle_network_references(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_strip_gentle_network_references(item) for item in value]
+    return value
+
+
+def _strip_gentle_network_from_phrases(phrases, r):
+    """Remove gentle-network wording when elevation is not configured."""
+    network = (r.config.get('network') if r is not None else None) or {}
+    if network.get('elevation'):
+        return phrases
+    return _strip_gentle_network_references(phrases)
+
+
 def access_distance(r):
     """Walking access distance (m) configured for a study region."""
     network = (r.config.get('network') if r is not None else None) or {}
@@ -89,7 +120,7 @@ def access_distance(r):
 
 
 def access_name(name, r=None, distance=None):
-    """Rewrite the default 400 m access distance in an indicator name/label.
+    """Rewrite the default 400m access distance in an indicator name/label.
 
     This mirrors ghsci._access_distance_text.  It is duplicated here because
     _utils is imported both as ``subprocesses._utils`` and as a bare
@@ -340,6 +371,7 @@ def generate_report_for_language(
 
     report_region = Region(r.config['yaml'])
     phrases = report_region.get_phrases(language)
+    phrases = _strip_gentle_network_from_phrases(phrases, report_region)
     font = get_and_setup_font(language, report_region.config)
 
     # instantiate template
@@ -387,6 +419,10 @@ def generate_report_for_language(
             phrases = report_region.get_phrases(
                 language,
                 reporting_template=report_template,
+            )
+            phrases = _strip_gentle_network_from_phrases(
+                phrases,
+                report_region,
             )
             # Make the heat exposure composite years available to phrases
             # formatted during figure and template preparation (e.g. the
@@ -698,6 +734,27 @@ def generate_resources(  # noqa: C901
                     basemap=basemap,
                 )
                 print(f"  {file.replace(config['region_dir'], '')}")
+    # Elevation profile of the configured digital elevation model
+    if (r.config.get('network') or {}).get('elevation'):
+        file = f'{figure_path}/elevation_profile_{locale}.jpg'
+        if os.path.exists(file):
+            print(
+                f"  {file.replace(config['region_dir'], '')} (exists; delete or rename to re-generate)",
+            )
+        else:
+            elevation_profile_map(
+                r,
+                gdf_boundary=gdf_city,
+                path=file,
+                cmap=cmap,
+                width=fpdf2_mm_scale(88),
+                height=fpdf2_mm_scale(80),
+                dpi=300,
+                phrases=phrases,
+                locale=locale,
+                locale_profile=locale_profile,
+            )
+            print(f"  {file.replace(config['region_dir'], '')}")
     # Conditional processing of Earth Engine indicators
     if r.config['gee']:
         if 'ee' not in r.config:
@@ -951,7 +1008,27 @@ def compile_spatial_map_info(
         'pop_pct_access_400m_pt_any_score',
         distance=access_distance_m,
     )
-    if gdf_city[pt_freq_20][0] is None or pd.isna(gdf_city[pt_freq_20][0]):
+    pt_freq_20_figure = access_name(
+        'pct_access_400m_pt_gtfs_freq_20_score',
+        distance=access_distance_m,
+    )
+    pt_any_figure = access_name(
+        'pct_access_400m_pt_any_score',
+        distance=access_distance_m,
+    )
+    # The GTFS frequency indicator is omitted when no GTFS data are available.
+    # In that case fall back to the generic public transport access figure
+    # rather than assuming the GTFS figure is present (which raised a KeyError
+    # for study regions without GTFS feeds).
+    gtfs_frequency_available = (
+        pt_freq_20 in gdf_city.columns
+        and not pd.isna(gdf_city[pt_freq_20].iloc[0])
+    )
+    if (
+        not gtfs_frequency_available
+        and pt_any in gdf_city.columns
+        and pt_any_figure in spatial_maps
+    ):
         city_summary_percent = _pct(
             fnum(
                 gdf_city[pt_any].fillna(0)[0],
@@ -968,16 +1045,10 @@ def compile_spatial_map_info(
             percent=city_summary_percent,
             **phrases,
         )
-        pt_any_figure = access_name(
-            'pct_access_400m_pt_any_score',
-            distance=access_distance_m,
-        )
-        spatial_maps[pt_any_figure] = spatial_maps.pop(
-            access_name(
-                'pct_access_400m_pt_gtfs_freq_20_score',
-                distance=access_distance_m,
-            ),
-        )
+        if pt_freq_20_figure in spatial_maps:
+            spatial_maps[pt_any_figure] = spatial_maps.pop(
+                pt_freq_20_figure,
+            )
         spatial_maps[pt_any_figure]['label'] = phrases[
             'Percentage of population with access to public transport'
         ]
@@ -1192,9 +1263,15 @@ def spatial_dist_map(
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_axis_off()
     divider = make_axes_locatable(ax)  # Define 'divider' for the axes
-    # Legend axes will be located at the 'bottom' of figure, with width '5%' of ax and
-    # a padding between them equal to '0.1' inches
-    pad_value = 0.1 if overlay is None else 0.24
+    # When an overlay has a legend label, place its legend in a dedicated
+    # strip between the map and the colour bar, matching the green space map.
+    legend_ax = None
+    if overlay_label is not None and overlay is not None:
+        legend_ax = divider.append_axes('bottom', size='8%', pad=0.1)
+        legend_ax.set_axis_off()
+        pad_value = 0.1
+    else:
+        pad_value = 0.1 if overlay is None else 0.24
     cax = divider.append_axes('bottom', size='5%', pad=pad_value)
     # Calculate bounds from boundary with buffer
     region_bounds = gdf.total_bounds
@@ -1268,9 +1345,35 @@ def spatial_dist_map(
             overlay,
             colour=overlay_colour,
             alpha=overlay_alpha,
-            label=overlay_label,
+            label=None,
             locale_profile=locale_profile,
             markersize=overlay_markersize,
+        )
+    if legend_ax is not None:
+        is_point = (
+            len(overlay) > 0
+            and overlay.geometry.geom_type.isin(['Point', 'MultiPoint']).all()
+        )
+        legend_colour = overlay_colour or (
+            DEFAULT_POINT_OVERLAY_COLOUR
+            if is_point
+            else DEFAULT_POLYGON_OVERLAY_COLOUR
+        )
+        legend_ax.legend(
+            handles=[
+                Patch(
+                    facecolor=legend_colour,
+                    alpha=overlay_alpha,
+                    edgecolor='none',
+                    label=mpl_text(overlay_label, locale_profile),
+                ),
+            ],
+            loc='center',
+            ncol=1,
+            frameon=False,
+            handlelength=1,
+            handleheight=1,
+            fontsize=textsize - 1,
         )
     # scalebar
     add_scalebar(
@@ -1449,6 +1552,305 @@ def threshold_map(
     plt.tight_layout()
     fig.savefig(path, dpi=dpi)
     plt.close(fig)
+    return path
+
+
+def _elevation_profile_metadata_path(path):
+    """Path of the metadata sidecar for an elevation profile figure."""
+    return f'{os.path.splitext(path)[0]}.json'
+
+
+def _read_elevation_profile_metadata(path):
+    """Read elevation profile values saved alongside a generated figure."""
+    metadata_path = _elevation_profile_metadata_path(path)
+    if not os.path.exists(metadata_path):
+        return None
+    try:
+        with open(metadata_path) as file:
+            return json.load(file)
+    except (OSError, ValueError) as error:
+        print(f'  Could not read elevation profile metadata: {error}')
+        return None
+
+
+def _write_elevation_profile_metadata(path, metadata):
+    """Save elevation profile values alongside a generated figure."""
+    metadata_path = _elevation_profile_metadata_path(path)
+    try:
+        with open(metadata_path, 'w') as file:
+            json.dump(metadata, file, indent=2)
+    except OSError as error:
+        print(f'  Could not save elevation profile metadata: {error}')
+
+
+def _dem_elevation_range(src, geometries, window, block_size=4096):
+    """Minimum and maximum valid DEM value within the study region.
+
+    The clipped area can be very large for 1 m lidar DEMs, so the raster is
+    read and masked one block at a time rather than being loaded in full.
+    """
+    from rasterio.features import geometry_mask
+    from rasterio.windows import Window
+
+    nodata = src.nodata
+    vmin = None
+    vmax = None
+    row_start = int(window.row_off)
+    row_stop = row_start + int(window.height)
+    col_start = int(window.col_off)
+    col_stop = col_start + int(window.width)
+    for row_off in range(row_start, row_stop, block_size):
+        height = min(block_size, row_stop - row_off)
+        for col_off in range(col_start, col_stop, block_size):
+            width = min(block_size, col_stop - col_off)
+            block = Window(col_off, row_off, width, height)
+            data = src.read(1, window=block)
+            if not np.isfinite(data).any():
+                continue
+            inside = geometry_mask(
+                geometries,
+                out_shape=data.shape,
+                transform=src.window_transform(block),
+                invert=True,
+                all_touched=False,
+            )
+            valid = inside & np.isfinite(data)
+            if nodata is not None:
+                valid &= data != nodata
+            if not valid.any():
+                continue
+            block_min = float(data[valid].min())
+            block_max = float(data[valid].max())
+            vmin = block_min if vmin is None else min(vmin, block_min)
+            vmax = block_max if vmax is None else max(vmax, block_max)
+    return vmin, vmax
+
+
+def elevation_profile_map(
+    r,
+    gdf_boundary,
+    path,
+    cmap,
+    width=fpdf2_mm_scale(88),
+    height=fpdf2_mm_scale(80),
+    dpi=300,
+    phrases={'north arrow': 'N', 'km': 'km'},
+    locale='en',
+    locale_profile=None,
+    max_dimension=2000,
+    basemap='satellite',
+    alpha=0.85,
+):
+    """Map a digital elevation model clipped to the study region."""
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.features import geometry_mask
+    from rasterio.transform import Affine
+    from rasterio.windows import Window, from_bounds
+
+    elevation_config = (r.config.get('network') or {}).get('elevation') or {}
+    dem_path = elevation_config.get('data')
+    if not dem_path or not os.path.exists(dem_path):
+        print(
+            '  Elevation profile skipped: no accessible elevation data is '
+            'configured for this study region.',
+        )
+        return None
+    metadata = _read_elevation_profile_metadata(path)
+    if os.path.exists(path) and metadata is not None:
+        r.config['elevation_profile'] = metadata
+        print(
+            f'  figures/{os.path.basename(path)}; Already exists; Delete to re-generate.',
+        )
+        return path
+
+    boundary = gdf_boundary
+    with rasterio.open(dem_path) as src:
+        src_epsg = src.crs.to_epsg() if src.crs else None
+        boundary_epsg = boundary.crs.to_epsg() if boundary.crs else None
+        if src_epsg and boundary_epsg and src_epsg != boundary_epsg:
+            boundary = boundary.to_crs(src.crs)
+        left, bottom, right, top = boundary.total_bounds
+        window = (
+            from_bounds(
+                left,
+                bottom,
+                right,
+                top,
+                transform=src.transform,
+            )
+            .round_offsets()
+            .round_lengths()
+        )
+        window = window.intersection(Window(0, 0, src.width, src.height))
+        if window.width < 2 or window.height < 2:
+            print(
+                '  Elevation profile skipped: the study region does not '
+                'overlap the configured elevation data.',
+            )
+            return None
+
+        geometries = [
+            geometry.__geo_interface__ for geometry in boundary.geometry
+        ]
+        vmin, vmax = _dem_elevation_range(src, geometries, window)
+        if vmin is None or vmax is None:
+            print(
+                '  Elevation profile skipped: no valid elevation pixels were '
+                'found within the study region.',
+            )
+            return None
+        # Heights below the vertical datum are shown as the lowest colour
+        # rather than making the legend start below sea level.  This keeps the
+        # scale interpretable where the study region includes coastal water.
+        display_vmin = max(0.0, vmin) if vmax > 0 else vmin
+        metadata = {
+            'minimum': vmin,
+            'maximum': vmax,
+            'display_minimum': display_vmin,
+        }
+        r.config['elevation_profile'] = metadata
+
+        scale = min(1.0, max_dimension / max(window.width, window.height))
+        target_width = max(1, int(round(window.width * scale)))
+        target_height = max(1, int(round(window.height * scale)))
+        data = src.read(
+            1,
+            window=window,
+            out_shape=(target_height, target_width),
+            resampling=Resampling.average,
+        )
+        transform = src.window_transform(window) * Affine.scale(
+            window.width / target_width,
+            window.height / target_height,
+        )
+        inside = geometry_mask(
+            geometries,
+            out_shape=data.shape,
+            transform=transform,
+            invert=True,
+            all_touched=True,
+        )
+        nodata = src.nodata
+        valid = inside & np.isfinite(data)
+        if nodata is not None:
+            valid &= data != nodata
+        data = np.ma.masked_where(~valid, data)
+        win_left, win_bottom, win_right, win_top = src.window_bounds(window)
+        extent = (win_left, win_right, win_bottom, win_top)
+
+    textsize = 12
+    fig, ax = plt.subplots(figsize=(width, height))
+    ax.set_axis_off()
+    x_buffer = 0.1 * (extent[1] - extent[0])
+    y_buffer = 0.1 * (extent[3] - extent[2])
+    ax.set_xlim(extent[0] - x_buffer, extent[1] + x_buffer)
+    ax.set_ylim(extent[2] - y_buffer, extent[3] + y_buffer)
+    if basemap == 'satellite':
+        try:
+            basemap_provider = ctx.providers.Esri.WorldImagery
+            ctx.add_basemap(
+                ax,
+                crs=boundary.crs.to_string(),
+                source=basemap_provider,
+                attribution=False,
+                zorder=0,
+                zoom_adjust=1,
+            )
+            for img_artist in ax.get_images():
+                image_data = img_artist.get_array()
+                if (
+                    image_data is not None
+                    and image_data.ndim == 3
+                    and image_data.shape[2] >= 3
+                ):
+                    gray = (
+                        np.dot(
+                            image_data[..., :3].astype(float),
+                            [0.299, 0.587, 0.114],
+                        )
+                        / 255.0
+                    )
+                    img_artist.set_data(gray)
+                    img_artist.set_cmap('gray')
+                    img_artist.set_clim(0, 1)
+                    img_artist.set_alpha(0.7)
+            attribution = '\n'.join(
+                wrap(basemap_provider['attribution'], width=60),
+            )
+            ax.text(
+                0.01,
+                0.01,
+                attribution,
+                ha='left',
+                va='bottom',
+                fontsize=6,
+                color='white',
+                alpha=0.7,
+                zorder=10,
+                wrap=True,
+                transform=ax.transAxes,
+            )
+            ax.set_xlim(extent[0] - x_buffer, extent[1] + x_buffer)
+            ax.set_ylim(extent[2] - y_buffer, extent[3] + y_buffer)
+        except Exception as error:
+            print(f'  Could not add satellite basemap: {error}')
+    ax.imshow(
+        data,
+        cmap=cmap,
+        vmin=display_vmin,
+        vmax=vmax,
+        extent=extent,
+        interpolation='none',
+        alpha=alpha,
+        zorder=1,
+    )
+    boundary.boundary.plot(ax=ax, color='black', linewidth=1, alpha=0.7)
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes('bottom', size='5%', pad=0.3)
+    scalar_mappable = plt.cm.ScalarMappable(
+        cmap=cmap,
+        norm=plt.Normalize(vmin=display_vmin, vmax=vmax),
+    )
+    scalar_mappable._A = []
+    cbar = fig.colorbar(
+        scalar_mappable,
+        cax=cax,
+        orientation='horizontal',
+    )
+    # Batlow runs from dark blue at the low end to pink at the high end.
+    cbar.set_ticks([display_vmin, vmax])
+    cbar.set_ticklabels(
+        [
+            fnum(display_vmin, '#,##0.#', locale),
+            fnum(vmax, '#,##0.#', locale),
+        ],
+    )
+    cbar.set_label(
+        mpl_text('Elevation (metres)', locale_profile),
+        size=textsize,
+    )
+    cbar.ax.tick_params(labelsize=textsize)
+
+    add_scalebar(
+        ax,
+        length=int((extent[1] - extent[0]) / 3000),
+        multiplier=1000,
+        units='kilometer',
+        locale=locale,
+        locale_profile=locale_profile,
+        fontproperties=fm.FontProperties(size=textsize),
+    )
+    add_localised_north_arrow(
+        ax,
+        text=phrases['north arrow'],
+        locale_profile=locale_profile,
+    )
+    plt.tight_layout()
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+    _write_elevation_profile_metadata(path, metadata)
     return path
 
 
@@ -1771,7 +2173,7 @@ def ee_public_green_space_map(
     ]
 
     divider = make_axes_locatable(ax)
-    legend_ax = divider.append_axes('bottom', size='8%', pad=0.1)
+    legend_ax = divider.append_axes('bottom', size='8%', pad=0.23)
     legend_ax.set_axis_off()
     legend_ax.legend(
         handles=legend_elements,
@@ -1782,7 +2184,7 @@ def ee_public_green_space_map(
         handleheight=1,
         fontsize=textsize - 1,
     )
-    cax = divider.append_axes('bottom', size='5%', pad=0.1)
+    cax = divider.append_axes('bottom', size='5%', pad=0.23)
     sm = plt.cm.ScalarMappable(
         cmap=pink_cmap,
         norm=plt.Normalize(vmin=0, vmax=100),
@@ -2885,7 +3287,7 @@ def _network_data_source_citations(r):
             citation += f"\n{elevation['url']}"
         if citation:
             paragraphs.append(citation)
-    if gentle:
+    if gentle and elevation:
         grade = _gentle_grade_label(r, incline=True)
         parts = []
         source = gentle.get('source')
@@ -3076,6 +3478,149 @@ def _pdf_insert_context_page(pdf, pages, phrases, r):
                 'study region legend patch text c'
             ].format(source=phrases['intersection'])
         template.render()
+    return pdf
+
+
+ELEVATION_PROFILE_PAGE = 92
+
+
+def _elevation_data_source(r):
+    """Human-readable source of the configured elevation data."""
+    elevation = (r.config.get('network') or {}).get('elevation') or {}
+    source = elevation.get('source')
+    if source is None:
+        return ''
+    return str(source).strip()
+
+
+def _elevation_profile_description(r, phrases):
+    """Description of the elevation profile page."""
+    source = _elevation_data_source(r)
+    provided_by = f' provided by {source}' if source else ''
+    return (
+        f"Elevation profile of {phrases['city_name']} from Digital Elevation "
+        f'Model{provided_by}.'
+    )
+
+
+def _elevation_profile_metadata(r):
+    """Elevation values saved when the elevation profile figure was made."""
+    metadata = r.config.get('elevation_profile')
+    if metadata:
+        return metadata
+    figure = (
+        f"{r.config['pdf']['figure_path']}/"
+        f"elevation_profile_{r.config['pdf']['locale']}.jpg"
+    )
+    metadata = _read_elevation_profile_metadata(figure)
+    if metadata:
+        r.config['elevation_profile'] = metadata
+    return metadata
+
+
+def _elevation_profile_caption(r, phrases):
+    """Caption reporting the highest elevation in the study region."""
+    metadata = _elevation_profile_metadata(r)
+    if not metadata or metadata.get('maximum') is None:
+        return ''
+    highest = fnum(
+        metadata['maximum'],
+        '#,##0.#',
+        r.config['pdf']['locale'],
+    )
+    return (
+        f"The highest elevation in {phrases['city_name']} is at {highest} m "
+        'above sea level (New Zealand Vertical Datum 2016 (NZVD2016))'
+    )
+
+
+def _elevation_profile_elements(pages):
+    """Template elements for the elevation profile page.
+
+    The page is defined in the report configuration workbook.  Older
+    configured workbooks that predate it fall back to the first indicator
+    page layout, which has the same header, description, map and label
+    elements.
+    """
+    elements = pages.get(str(ELEVATION_PROFILE_PAGE))
+    if elements is not None:
+        return copy.deepcopy(elements)
+    source = pages.get('60')
+    if source is None:
+        return None
+    elements = copy.deepcopy(source)
+    names = {
+        'indicator_header': 'elevation_profile_header',
+        'indicator_description': 'elevation_profile_description',
+        'indicator_map': 'elevation_profile_map',
+        'indicator_label': 'elevation_profile_label',
+    }
+    for element in elements:
+        element['name'] = names.get(element.get('name'), element.get('name'))
+    return elements
+
+
+def _pdf_insert_elevation_profile_page(pdf, pages, phrases, r):
+    """Add and render the elevation profile page."""
+    if 'spatial' not in r.config['pdf']['report_template']:
+        return pdf
+    elevation = (r.config.get('network') or {}).get('elevation') or {}
+    if not elevation:
+        return pdf
+    figure = (
+        f"{r.config['pdf']['figure_path']}/"
+        f"elevation_profile_{r.config['pdf']['locale']}.jpg"
+    )
+    if not os.path.exists(figure):
+        print(
+            '  Elevation profile page skipped: its map has not been '
+            'generated for this study region.',
+        )
+        return pdf
+    elements = _elevation_profile_elements(pages)
+    if elements is None:
+        print(
+            '  Elevation profile page skipped: the report template does not '
+            'provide a map page layout.',
+        )
+        return pdf
+    caption = _elevation_profile_caption(r, phrases)
+    for element in elements:
+        name = element.get('name')
+        if name == 'elevation_profile_map':
+            element.update(
+                {
+                    'x1': 14,
+                    'y1': 55,
+                    'x2': 196,
+                    'y2': 245,
+                    'keep_aspect_ratio': 1,
+                },
+            )
+        elif name == 'elevation_profile_label':
+            element.update(
+                {
+                    'x1': 14,
+                    'y1': 250,
+                    'x2': 196,
+                    'y2': 256.5,
+                    'size': 16,
+                    'foreground': int('584b9f', 16),
+                    'align': 'C',
+                    'multiline': True,
+                },
+            )
+    template = FlexTemplate(pdf, elements=elements)
+    pdf.add_page()
+    template['elevation_profile_header'] = 'Elevation profile'
+    template['elevation_profile_description'] = _elevation_profile_description(
+        r,
+        phrases,
+    )
+    template['elevation_profile_map'] = figure
+    if 'elevation_profile_label' in template:
+        template['elevation_profile_label'] = caption
+    template.render()
     return pdf
 
 
@@ -3324,22 +3869,21 @@ DAILY_LIVING_MATRIX_PAGES = {
     'pct_access_400m_safe_daily_living_all_score': True,
 }
 
-# Indicator pages whose description also reports the availability of the
-# footpath width data on which the safe walking network depends.
+# Indicator pages whose description also reports the availability of
+# footpath width data, which is not itself used to filter the safe network.
 SAFE_ACCESS_INDICATOR_KEYS = {
     'pct_access_400m_pt_safe_freq_20_score',
-    'pct_access_400m_safe_daily_living_all_score',
 }
 
 
 def _safe_network_width_description(r):
     """Describe how much of the network has recorded footpath width data.
 
-    The safe walking indicators traverse only links with a recorded width of
-    at least 1.5 m.  Where width is rarely mapped, the indicator is based on a
-    small and potentially unrepresentative part of the network, so report the
-    coverage alongside the results for the footway, path, pedestrian,
-    living_street and residential links from which the safe network is drawn.
+    Footpath width is not used to exclude links from the safe walking network,
+    because width coverage is too sparse for that to be representative.  The
+    proportion of eligible links with width information is instead reported
+    alongside the results, for the footway, path, pedestrian, living_street
+    and residential links from which the safe network is drawn.
     """
     cache_key = 'safe_network_width_summary'
     if cache_key in r.config['pdf']:
@@ -3405,12 +3949,15 @@ def _safe_network_width_description(r):
         )
     )
     return (
-        f'Of {fnum(total, "#,##0", locale)} eligible links, footpath width '
-        f'is recorded for {fnum(with_width, "#,##0", locale)} '
-        f'({fnum(pct_with_width, "0.0", locale)}%) and '
+        'Footpath width is an important measure of accessibility, however of '
+        f'{fnum(total, "#,##0", locale)} eligible links, footpath width is '
+        f'only recorded for {fnum(with_width, "#,##0", locale)} '
+        f'({fnum(pct_with_width, "0.0", locale)}%) and of these, only '
         f'{fnum(at_least, "#,##0", locale)} '
         f'({fnum(pct_at_least, "0.0", locale)}%) record at least '
-        f'{min_width} metre{"s" if float(min_width) != 1 else ""}.'
+        f'{min_width} metre{"s" if float(min_width) != 1 else ""}. '
+        'Therefore, a lack of data availability prevents this width measure '
+        'from being incorporated in this indicator.'
     )
 
 
@@ -3427,30 +3974,30 @@ def _gentle_grade_label(r, incline=False):
     return f'{ratio_text} ({100 * max_grade:.1f}%{suffix})'
 
 
-def _daily_living_matrix_values(r, safe=False):
+def _daily_living_matrix_values(r, safe=False, score_columns=None):
     """Population-weighted individual and pairwise destination access.
 
-    Returns a 3x3 matrix of percentages for fresh food markets, convenience
-    stores and public transport stops, where each cell is the percentage of
-    the population with access to both categories (the diagonal therefore
+    Returns a square matrix of percentages, where each cell is the percentage
+    of the population with access to both categories (the diagonal therefore
     reports each category individually), together with the percentage with
-    access to all three.  Values are calculated from the sample points so that
-    combinations reflect the same people having access to both destinations,
-    rather than assuming independence between categories.
+    access to every category.  Values are calculated from the sample points so
+    that combinations reflect the same people having access to both
+    destinations, rather than assuming independence between categories.
     """
-    score_columns = (
-        [
-            'sp_access_safe_fresh_food_market_score',
-            'sp_access_safe_convenience_score',
-            'sp_access_safe_pt_any_score',
-        ]
-        if safe
-        else [
-            'sp_access_fresh_food_market_score',
-            'sp_access_convenience_score',
-            'sp_access_pt_any_score',
-        ]
-    )
+    if score_columns is None:
+        score_columns = (
+            [
+                'sp_access_safe_fresh_food_market_score',
+                'sp_access_safe_convenience_score',
+                'sp_access_safe_pt_any_score',
+            ]
+            if safe
+            else [
+                'sp_access_fresh_food_market_score',
+                'sp_access_convenience_score',
+                'sp_access_pt_any_score',
+            ]
+        )
     columns = ['p.grid_id', 'g.pop_est'] + [
         f'p.{column}' for column in score_columns
     ]
@@ -3505,30 +4052,45 @@ def _daily_living_matrix_values(r, safe=False):
         ]
         for first in score_columns
     ]
-    all_three = float(
-        (
-            weights
-            * values[score_columns[0]]
-            * values[score_columns[1]]
-            * values[score_columns[2]]
-        ).sum()
-        * 100,
+    all_categories = float(
+        (weights * values[score_columns].prod(axis=1)).sum() * 100,
     )
-    return {'matrix': matrix, 'all_three': all_three}
+    return {
+        'matrix': matrix,
+        'all_categories': all_categories,
+        'n_categories': len(score_columns),
+    }
 
 
-def _daily_living_matrix_figure(r, phrases, safe=False):
-    """Render the destination category and pair access matrix as an image."""
-    data = _daily_living_matrix_values(r, safe=safe)
+def _daily_living_matrix_figure(
+    r,
+    phrases,
+    safe=False,
+    score_columns=None,
+    labels=None,
+    title=None,
+    path_suffix=None,
+):
+    """Render a destination category and pair access matrix as an image."""
+    data = _daily_living_matrix_values(
+        r,
+        safe=safe,
+        score_columns=score_columns,
+    )
     if data is None:
         return None
     locale = r.config['pdf']['locale']
-    labels = ['Food market', 'Convenience', 'Public transport']
+    if labels is None:
+        labels = ['Food market', 'Convenience', 'Public transport']
     matrix = np.array(data['matrix'], dtype=float)
-    fig, ax = plt.subplots(figsize=(2.6, 2.8), dpi=300)
-    ax.imshow(matrix, cmap='Blues', vmin=0, vmax=100)
-    ax.set_xticks(range(len(labels)))
-    ax.set_yticks(range(len(labels)))
+    n_labels = len(labels)
+    fig, ax = plt.subplots(
+        figsize=(2.6, 2.8) if n_labels <= 3 else (3.0, 3.2),
+        dpi=300,
+    )
+    ax.imshow(matrix, cmap='Greys', vmin=0, vmax=100)
+    ax.set_xticks(range(n_labels))
+    ax.set_yticks(range(n_labels))
     ax.set_xticklabels(
         labels,
         rotation=90,
@@ -3538,26 +4100,27 @@ def _daily_living_matrix_figure(r, phrases, safe=False):
     )
     ax.set_yticklabels(labels, fontsize=6.5)
     ax.tick_params(length=0)
-    for row in range(len(labels)):
-        for column in range(len(labels)):
+    for row in range(n_labels):
+        for column in range(n_labels):
             value = matrix[row, column]
             colour = 'white' if value >= 55 else '#1B2631'
             ax.text(
                 column,
                 row,
-                f'{fnum(value, "0.0", locale)}%',
+                fnum(value, '0.0', locale),
                 ha='center',
                 va='center',
                 fontsize=7.5,
                 color=colour,
             )
-    title = (
-        'Safe access to destinations (%)'
-        if safe
-        else 'Access to destinations (%)'
-    )
-    if (r.config.get('network') or {}).get('elevation'):
-        title = title.replace(' (%)', ' via the gentle network (%)')
+    if title is None:
+        title = (
+            'Safe access to destinations (%)'
+            if safe
+            else 'Access to destinations (%)'
+        )
+        if (r.config.get('network') or {}).get('elevation'):
+            title = title.replace(' (%)', ' using the gentle network (%)')
     ax.set_title(
         title,
         fontsize=8,
@@ -3570,56 +4133,124 @@ def _daily_living_matrix_figure(r, phrases, safe=False):
         ha='center',
         fontsize=5.8,
     )
+    count_words = {1: 'one', 2: 'two', 3: 'three', 4: 'four'}
+    count_label = count_words.get(
+        data['n_categories'],
+        str(data['n_categories']),
+    )
     fig.text(
         0.5,
         0.02,
-        f'All three: {fnum(data["all_three"], "0.0", locale)}%',
+        f'All {count_label}: '
+        f'{fnum(data["all_categories"], "0.0", locale)}%',
         ha='center',
         fontsize=6.2,
         fontweight='bold',
     )
     fig.subplots_adjust(
-        left=0.40,
+        left=0.40 if n_labels <= 3 else 0.47,
         right=0.98,
         top=0.84,
-        bottom=0.40,
+        bottom=0.40 if n_labels <= 3 else 0.42,
     )
+    if path_suffix is None:
+        path_suffix = '_safe' if safe else ''
     figure_path = (
         f"{r.config['pdf']['figure_path']}/destination_access_matrix"
-        f"{'_safe' if safe else ''}_{r.config['pdf']['language']}.png"
+        f'{path_suffix}_{r.config["pdf"]["language"]}.png'
     )
     fig.savefig(figure_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
     return figure_path
 
 
-def _arrange_daily_living_matrix_page(elements, matrix_path):
+def _daily_living_health_services_matrix_figure(r, phrases):
+    """Render the 4x4 daily living and health services access matrix."""
+    return _daily_living_matrix_figure(
+        r,
+        phrases,
+        score_columns=[
+            'sp_access_fresh_food_market_score',
+            'sp_access_convenience_score',
+            'sp_access_pt_any_score',
+            'sp_access_health_services_score',
+        ],
+        labels=[
+            'Food market',
+            'Convenience',
+            'Public transport',
+            'Health services',
+        ],
+        path_suffix='_daily_living_health_services',
+    )
+
+
+def _public_toilets_rest_points_matrix_figure(r, phrases):
+    """Render the 2x2 public toilets and rest points access matrix."""
+    return _daily_living_matrix_figure(
+        r,
+        phrases,
+        score_columns=[
+            'sp_access_public_toilets_score',
+            'sp_access_rest_points_score',
+        ],
+        labels=['Public toilets', 'Rest points'],
+        path_suffix='_public_toilets_rest_points',
+    )
+
+
+def _arrange_daily_living_matrix_page(elements, matrix_path, map_y1=80):
     """Place the destination matrix in the top right of a daily living page.
 
     The matrix sits below the city title, and the description is narrowed to
     half the page width so that it wraps beside the matrix rather than beneath
-    it.  The map keeps the full column width and starts below both.
+    it.  The map keeps the full column width and starts below both; pages with
+    a longer description can start it lower.
     """
     map_element = None
     for element in elements:
         if element.get('name') == 'indicator_description':
             element['x2'] = 105
         elif element.get('name') == 'indicator_map':
-            element['y1'] = 80
+            element['y1'] = map_y1
             element['keep_aspect_ratio'] = 1
             map_element = element
     if map_element is None:
         return elements
+    from PIL import Image
+
+    box_x1, box_y1, box_x2, box_y2 = 136, 15, 196, 78
+    box_width = box_x2 - box_x1
+    box_height = box_y2 - box_y1
+    try:
+        with Image.open(matrix_path) as image:
+            image_width, image_height = image.size
+        image_aspect = image_width / image_height
+    except Exception:
+        image_aspect = box_width / box_height
+    if image_aspect >= box_width / box_height:
+        width = box_width
+        height = width / image_aspect
+        x1 = box_x1
+        x2 = box_x2
+        y1 = box_y1 + (box_height - height) / 2
+        y2 = y1 + height
+    else:
+        height = box_height
+        width = height * image_aspect
+        y1 = box_y1
+        y2 = box_y2
+        x1 = box_x1 + (box_width - width) / 2
+        x2 = x1 + width
     matrix_element = dict(map_element)
     matrix_element.update(
         {
             'name': 'daily_living_combination_matrix',
             'type': 'I',
-            'x1': 136,
-            'y1': 15,
-            'x2': 196,
-            'y2': 78,
-            'keep_aspect_ratio': 1,
+            'x1': x1,
+            'y1': y1,
+            'x2': x2,
+            'y2': y2,
             'text': matrix_path,
         },
     )
@@ -3683,9 +4314,17 @@ AGE_FRIENDLY_INDICATOR_PAGES = [
     (
         66,
         'Access to daily living destinations',
-        'Residential access within 400 m of daily living destinations (fresh '
+        'Residential access within 400m of daily living destinations (fresh '
         'food, convenience store and public transport service)',
         'pct_access_400m_daily_living_all_score',
+        'map',
+    ),
+    (
+        73,
+        'Access to daily living destinations and health services',
+        'Residential access within 400m of daily living destinations (fresh '
+        'food, convenience store and public transport) and health services',
+        'pct_access_400m_daily_living_health_services_score',
         'map',
     ),
     (
@@ -3699,19 +4338,17 @@ AGE_FRIENDLY_INDICATOR_PAGES = [
     (
         68,
         'Safe access to public transport service',
-        'Safe network defined as OpenStreetMap footway, path, pedestrian, '
-        'living_street, residential, width >= 1.5 metres and gradient no '
-        'steeper than {gentle_grade}.',
+        'Safe access defined as all OpenStreetMap pedestrian-friendly '
+        'footpath typologies (excludes the highway typology)',
         'pct_access_400m_pt_safe_freq_20_score',
         'map',
     ),
     (
         69,
         'Safe access to daily living destinations',
-        'Residential access within 400 m of daily living destinations (fresh '
-        'food, convenience store and public transport) using safe network '
-        '(footpath width >= 1.5 metres and gradient no steeper than '
-        '{gentle_grade}).',
+        'Safe access (see page {safe_pt_page}) within 400m of daily living destinations '
+        '(fresh food, convenience store and public transport) using the '
+        'gentle access network.',
         'pct_access_400m_safe_daily_living_all_score',
         'map',
     ),
@@ -3726,7 +4363,8 @@ AGE_FRIENDLY_INDICATOR_PAGES = [
     (
         71,
         'Access to community and social facilities',
-        'Destinations include community centres, gardens, libraries, public '
+        'Residential access within 400m of community and social facilities '
+        'including community centres, gardens, libraries, public '
         'toilets, arts centres, museums, gyms, outdoor gyms',
         'pct_access_400m_community_facilities_score',
         'map',
@@ -3734,9 +4372,20 @@ AGE_FRIENDLY_INDICATOR_PAGES = [
     (
         72,
         'Public transport access to community and social facilities',
-        'Destinations include community centres, gardens, libraries, public '
-        'toilets, arts centres, museums, gyms, outdoor gyms',
+        'Public transport access to community and social facilities '
+        'within 400m to the nearest PT stop/station, and within 400m '
+        'from destination PT stop/station to destinations including '
+        'community centres, gardens, libraries, public toilets, arts '
+        'centres, museums, gyms and outdoor gyms',
         'pct_access_400m_pt_transit_community_facilities_score',
+        'map',
+    ),
+    (
+        74,
+        'Access to public toilets and rest points',
+        'Residential access within 400 m of public toilets and rest points, '
+        'including benches, picnic tables, shelters and bus stops',
+        'pct_access_400m_public_toilets_rest_points_score',
         'map',
     ),
 ]
@@ -3795,7 +4444,58 @@ def _indicator_label(r, phrases, key):
     return label
 
 
-def _pdf_insert_indicator_pages(pdf, pages, phrases, r):
+def _arrange_indicator_matrix_page(
+    pages,
+    page,
+    r,
+    phrases,
+    key,
+    daily_living_pages,
+    daily_living_health_services_key,
+    public_toilets_rest_points_key,
+):
+    """Add the appropriate destination-combination matrix to an indicator page."""
+    elements = pages[f'{page}']
+    if key == public_toilets_rest_points_key:
+        for element in elements:
+            if element.get('name') == 'indicator_header':
+                element.update(
+                    {
+                        'x2': 130,
+                        'y2': 26,
+                        'multiline': True,
+                    },
+                )
+        matrix_path = _public_toilets_rest_points_matrix_figure(r, phrases)
+        if matrix_path is not None:
+            _arrange_daily_living_matrix_page(elements, matrix_path)
+    elif key == daily_living_health_services_key:
+        for element in elements:
+            if element.get('name') == 'indicator_header':
+                element.update(
+                    {
+                        'x2': 130,
+                        'y2': 26,
+                        'multiline': True,
+                    },
+                )
+        matrix_path = _daily_living_health_services_matrix_figure(r, phrases)
+        if matrix_path is not None:
+            _arrange_daily_living_matrix_page(elements, matrix_path)
+    elif key in daily_living_pages:
+        matrix_path = _daily_living_matrix_figure(
+            r,
+            phrases,
+            safe=daily_living_pages[key],
+        )
+        if matrix_path is not None:
+            _arrange_daily_living_matrix_page(
+                elements,
+                matrix_path,
+            )
+
+
+def _pdf_insert_indicator_pages(pdf, pages, phrases, r):  # noqa: C901
     """Add and render one page per age-friendly indicator, in a fixed order."""
     if 'spatial' not in r.config['pdf']['report_template']:
         return pdf
@@ -3804,6 +4504,20 @@ def _pdf_insert_indicator_pages(pdf, pages, phrases, r):
         access_name(key, r): safe
         for key, safe in DAILY_LIVING_MATRIX_PAGES.items()
     }
+    daily_living_health_services_key = access_name(
+        'pct_access_400m_daily_living_health_services_score',
+        r,
+    )
+    public_toilets_rest_points_key = access_name(
+        'pct_access_400m_public_toilets_rest_points_score',
+        r,
+    )
+    safe_pt_key = access_name('pct_access_400m_pt_safe_freq_20_score', r)
+    safe_daily_living_key = access_name(
+        'pct_access_400m_safe_daily_living_all_score',
+        r,
+    )
+    safe_pt_page_number = None
     for page, header, description, key, kind in AGE_FRIENDLY_INDICATOR_PAGES:
         header = access_name(header, r)
         description = access_name(description, r)
@@ -3818,10 +4532,12 @@ def _pdf_insert_indicator_pages(pdf, pages, phrases, r):
             )
             continue
         network_suffix = _gentle_network_suffix(r)
-        if key.startswith('pct_access_') and network_suffix:
-            description = (
-                f'{description.rstrip(". ")}{network_suffix}.'
-            )
+        if (
+            key.startswith('pct_access_')
+            and network_suffix
+            and 'gentle access network' not in description
+        ):
+            description = f'{description.rstrip(". ")}{network_suffix}.'
         if key == access_name(
             'pct_access_400m_pt_transit_health_services_score',
             r,
@@ -3837,6 +4553,16 @@ def _pdf_insert_indicator_pages(pdf, pages, phrases, r):
                 description = (
                     f'{description.rstrip(". ")}. {width_description}'
                 )
+        if not (r.config.get('network') or {}).get('elevation'):
+            description = _strip_gentle_network_references(description)
+        next_page_number = pdf.page_no() + 1
+        if key == safe_pt_key:
+            safe_pt_page_number = next_page_number
+        if key == safe_daily_living_key and safe_pt_page_number is not None:
+            description = description.replace(
+                '{safe_pt_page}',
+                str(safe_pt_page_number),
+            )
         if kind == 'map':
             for element in pages[f'{page}']:
                 if element.get('name') == 'indicator_map':
@@ -3867,17 +4593,16 @@ def _pdf_insert_indicator_pages(pdf, pages, phrases, r):
                             'keep_aspect_ratio': 1,
                         },
                     )
-        if key in daily_living_pages:
-            matrix_path = _daily_living_matrix_figure(
-                r,
-                phrases,
-                safe=daily_living_pages[key],
-            )
-            if matrix_path is not None:
-                _arrange_daily_living_matrix_page(
-                    pages[f'{page}'],
-                    matrix_path,
-                )
+        _arrange_indicator_matrix_page(
+            pages,
+            page,
+            r,
+            phrases,
+            key,
+            daily_living_pages,
+            daily_living_health_services_key,
+            public_toilets_rest_points_key,
+        )
         template = FlexTemplate(pdf, elements=pages[f'{page}'])
         pdf.add_page()
         if 'indicator_header' in template:
@@ -4060,6 +4785,59 @@ def _pdf_insert_climate_change_risk_reduction(pdf, pages, phrases, r):
     return pdf
 
 
+OSM_DESTINATION_SUMMARY = [
+    ('Fresh food', 'fresh_food_market'),
+    ('Convenience', 'convenience'),
+    ('Public transport', 'pt_any'),
+    ('Community and social facilities', 'community_facilities'),
+    ('Public toilets', 'public_toilets'),
+    ('Rest points', 'rest_points'),
+]
+
+
+def _osm_destination_definitions_summary():
+    """Summarise the OSM tag rules used to define report destinations."""
+    import ghsci
+
+    definitions = getattr(ghsci, 'df_osm_dest', None)
+    if definitions is None or definitions.empty:
+        return ''
+    categories = []
+    for label, destination in OSM_DESTINATION_SUMMARY:
+        rows = definitions[definitions['dest_name'] == destination]
+        if rows.empty:
+            continue
+        includes = []
+        excludes = []
+        for record in rows.to_dict('records'):
+            key = str(record.get('key', '')).strip()
+            value = record.get('value')
+            condition = str(record.get('pre-condition', '')).upper()
+            if not key or key == 'nan' or pd.isna(value):
+                continue
+            value = str(value).strip()
+            if value in ('', 'nan'):
+                continue
+            tag = f'{key}=*' if value == 'NULL' else f'{key}={value}'
+            if condition == 'NOT':
+                if tag not in excludes:
+                    excludes.append(tag)
+            elif tag not in includes:
+                includes.append(tag)
+        if not includes:
+            continue
+        description = f'- {label}: ' + ', '.join(includes)
+        if excludes:
+            description += '; excluding ' + ' and '.join(excludes)
+        categories.append(description)
+    if not categories:
+        return ''
+    return (
+        'OpenStreetMap destination definitions\n\n'
+        + '\n\n'.join(categories)
+    )
+
+
 def _pdf_insert_back_page(pdf, pages, phrases, r):
     # Set up last page
     if r.config['pdf']['report_template'] == 'policy':
@@ -4074,6 +4852,11 @@ def _pdf_insert_back_page(pdf, pages, phrases, r):
         template = FlexTemplate(pdf, elements=pages['24'])
     else:
         return pdf
+    if 'summary_spatial' in template:
+        summary = phrases.get('summary_spatial', '')
+        definitions = _osm_destination_definitions_summary()
+        if definitions:
+            template['summary_spatial'] = f'{summary}\n\n{definitions}'
     pdf.add_page()
     template.render()
     return pdf
@@ -4160,6 +4943,11 @@ def format_template_context(template, r, language, phrases):
         (k, d[k][0]['summary'] if d[k][0]['summary'] is not None else '')
         for k, d in zip(keys, context)
     ]
+    if not (r.config.get('network') or {}).get('elevation'):
+        context_list = [
+            (key, _strip_gentle_network_references(value))
+            for key, value in context_list
+        ]
 
     def update_value_if_key_in_template(
         key,
@@ -4324,6 +5112,23 @@ def _pdf_add_threshold_plots(template, r, phrases):
     return template
 
 
+def _configure_page_number_footer(pdf):
+    """Draw page numbers on all pages except the first, second and last."""
+    import types
+
+    def footer(self):
+        if self.page <= 2:
+            return
+        if self.page == getattr(self, '_skip_page_number_page', None):
+            return
+        self.set_font('helvetica', '', 8)
+        self.set_text_color(0, 0, 0)
+        self.set_xy(0, self.h - 6)
+        self.cell(self.w, 5, str(self.page), align='C')
+
+    pdf.footer = types.MethodType(footer, pdf)
+
+
 def generate_pdf(
     r,
     font,
@@ -4377,10 +5182,12 @@ def generate_pdf(
         phrases,
     )
     pdf = _pdf_initialise_document(phrases, r.config)
+    _configure_page_number_footer(pdf)
     pdf = _pdf_insert_cover_page(pdf, pages, phrases, r)
     pdf = _pdf_insert_citation_page(pdf, pages, phrases, r)
     pdf = _pdf_insert_introduction_page(pdf, pages, phrases, r)
     pdf = _pdf_insert_context_page(pdf, pages, phrases, r)
+    pdf = _pdf_insert_elevation_profile_page(pdf, pages, phrases, r)
     pdf = _pdf_insert_policy_scoring_page(pdf, pages, phrases, r)
     # The spatial report moves straight from the study region context page to
     # the indicator pages.  The 25-city comparison blurb, the walkability
@@ -4400,6 +5207,8 @@ def generate_pdf(
     pdf = _pdf_insert_nature_based_solutions(pdf, pages, phrases, r)
     pdf = _pdf_insert_climate_change_risk_reduction(pdf, pages, phrases, r)
     pdf = _pdf_insert_back_page(pdf, pages, phrases, r)
+    # The back page is the last page, so skip its number in the footer.
+    pdf._skip_page_number_page = pdf.page_no()
     return pdf
 
 
