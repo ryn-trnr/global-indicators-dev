@@ -173,6 +173,38 @@ def apply_access_distance(value, distance):
     return _access_distance_text(value, distance)
 
 
+def population_age_clause(config):
+    """Return the age group configured for the population data, if any."""
+    population_name = str(config.get('population', {}).get('name', ''))
+    match = re.search(
+        r'\(\s*(\d+)\s*(?:to|-)\s*(\d+)\s*years?\s*\)',
+        population_name,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return f'{match.group(1)}-{match.group(2)}'
+    match = re.search(
+        r'\(\s*(\d+)\s*\+\s*years?\s*\)',
+        population_name,
+        flags=re.IGNORECASE,
+    )
+    return f'{match.group(1)}+' if match else ''
+
+
+def apply_population_age_phrases(phrases, config):
+    """Insert the configured age group into standard population captions."""
+    age_group = population_age_clause(config)
+    phrases['population_age_group'] = age_group
+    if age_group:
+        for key, value in list(phrases.items()):
+            if isinstance(value, str):
+                phrases[key] = value.replace(
+                    'of the population in {city_name}',
+                    f'of the population aged {age_group} in {{city_name}}',
+                )
+    return phrases
+
+
 def _apply_access_distance_phrases(phrases, distance):
     """Rewrite the access distance in report phrases and their keys.
 
@@ -3132,6 +3164,10 @@ class Region:
         phrases['city'] = config['name']
         phrases['city_name'] = city_details['languages'][language]['name']
         phrases['country'] = city_details['languages'][language]['country']
+        # A short age-group clause for indicator captions, for example
+        # 'aged 65-80', derived from the configured population dataset name
+        # (e.g. 'WorldPop Age and sex structures - (65 to 80 years)').
+        apply_population_age_phrases(phrases, config)
         phrases['study_doi'] = 'https://healthysustainablecities.org'
         phrases['summary_policy'] = city_details['languages'][language].get(
             'summary_policy',
