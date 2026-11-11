@@ -1070,6 +1070,15 @@ def _describe_walking_diversity(variable):
 
 def _describe_core_walking_access(variable):
     """Describe a core indicators.yml access column, or return None."""
+    if variable == 'sp_flood_risk_score':
+        return 'Score (0-1) for being within 100 m of a flood prone area'
+    if variable == 'pct_flood_risk':
+        return 'Percentage of population within 100 m of flood prone areas'
+    if variable == 'pop_pct_flood_risk':
+        return (
+            'Percentage of population within 100 m of flood prone areas '
+            '(population weighted)'
+        )
     match = re.fullmatch(r'sp_nearest_node_(.+)', variable)
     if match:
         return (

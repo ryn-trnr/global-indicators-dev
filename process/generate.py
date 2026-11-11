@@ -34,6 +34,7 @@ def export_indicators(r, gpkg=True, csv=True):
         'pt_stops_community_facilities_transit',
         'aos_public_any_nodes_30m_line',
         'aos_public_large_nodes_30m_line',
+        'flood_prone_areas',
         r.config['intersections_table'],
         'edges',
         'nodes',

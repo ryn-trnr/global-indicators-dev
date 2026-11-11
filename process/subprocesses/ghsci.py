@@ -173,6 +173,26 @@ def apply_access_distance(value, distance):
     return _access_distance_text(value, distance)
 
 
+def normalise_flood_configuration(config, codename, data_path):
+    """Return a validated flood configuration, or None when not configured."""
+    flood = config.get('flood')
+    if isinstance(flood, str):
+        flood = {'data': flood}
+    if not flood:
+        return None
+    flood = dict(flood)
+    if not flood.get('data'):
+        raise ValueError(
+            f"{codename}.yml error: 'flood' must define a 'data' path to a "
+            'flood prone area dataset.',
+        )
+    if not os.path.isabs(flood['data']):
+        flood['data'] = f"{data_path}/{flood['data']}"
+    flood.setdefault('buffer_distance', 100)
+    flood['buffer_distance'] = float(flood['buffer_distance'])
+    return flood
+
+
 def population_age_clause(config):
     """Return the age group configured for the population data, if any."""
     population_name = str(config.get('population', {}).get('name', ''))
@@ -1867,6 +1887,11 @@ class Region:
             r['network']['elevation'] = elevation
         else:
             r['network']['elevation'] = None
+        r['flood'] = normalise_flood_configuration(
+            r,
+            self.codename,
+            data_path,
+        )
         if 'osmnx_retain_all' not in r['network']:
             r['network']['osmnx_retain_all'] = False
         if r['network'].get('openstreetmap_query') is None:
@@ -2342,6 +2367,13 @@ class Region:
 
         neighbourhood_analysis(self.yaml)
         return 'Neighbourhood analysis completed.'
+
+    def _flood_risk(self):
+        """Analyse flood risk for this study region."""
+        from _11a_flood_risk import flood_risk
+
+        flood_risk(self.yaml)
+        return 'Flood risk analysis completed.'
 
     def _area_analysis(self):
         """Aggregate area level and overall city indicators for this study region."""
@@ -4147,6 +4179,7 @@ region_functions = {
             '_link_urban_covariates',
             '_gtfs_analysis',
             '_neighbourhood_analysis',
+            '_flood_risk',
             '_area_analysis',
         ],
     },

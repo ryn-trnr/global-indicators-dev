@@ -267,6 +267,7 @@ output:
         - sp_urban_heat_guhvi
         - sp_urban_heat_guhvi_class
         - sp_urban_heat_guhvi_class_5_most_vulnerable
+        - sp_flood_risk_score
     neighbourhood_variables:
         - pct_access_400m_fresh_food_market_score
         - pct_access_400m_convenience_score
@@ -307,6 +308,7 @@ output:
         - urban_heat_guhvi
         - urban_heat_guhvi_class
         - pct_urban_heat_guhvi_class_5_most_vulnerable
+        - pct_flood_risk
     city_variables:
         - pop_pct_access_400m_fresh_food_market_score
         - pop_pct_access_400m_convenience_score
@@ -347,6 +349,7 @@ output:
         - pop_urban_heat_guhvi
         - pop_urban_heat_guhvi_class
         - pop_pct_urban_heat_guhvi_class_5_most_vulnerable
+        - pop_pct_flood_risk
     extra_unweighted_vars:
         - local_nh_population_density
         - local_nh_intersection_density
@@ -559,6 +562,15 @@ report:
             outfile: 'pct_urban_heat_guhvi_class_5_most_vulnerable_{language}.jpg'
             range: [-0,100]
             tick_labels: ['{No}','{Yes}']
+        pct_flood_risk:
+            label: Percentage of population within 100 m of flood prone areas
+            outfile: 'pct_flood_risk_{language}.jpg'
+            range: [-0,100]
+            tick_labels: ['{No}','{Yes}']
+            overlay: flood_prone_areas
+            overlay_colour: '#3B7DD8'
+            overlay_alpha: 0.45
+            overlay_phrase: Flood prone areas
     policy:
         analyses:
           - Presence

@@ -3309,6 +3309,28 @@ def _network_data_source_citations(r):
     return '\n\n'.join(paragraphs)
 
 
+def _flood_data_source_citation(r):
+    """Citation text for the configured flood prone area dataset."""
+    flood = r.config.get('flood') or {}
+    if not flood:
+        return ''
+    title = flood.get('title') or 'Flood prone areas'
+    parts = []
+    publisher = flood.get('publisher')
+    if publisher:
+        parts.append(str(publisher))
+    date = _citation_date(flood.get('published_date'))
+    if date:
+        parts.append(date)
+    citation = f'Flood prone areas: {title}'
+    if parts:
+        citation += ', ' + ', '.join(parts)
+    citation += '.'
+    if flood.get('url'):
+        citation += f"\n{flood['url']}"
+    return citation
+
+
 def _insert_after_paragraph(text, addition, after):
     """Insert a paragraph into citation text after the named paragraph."""
     paragraphs = text.split('\n\n')
@@ -3371,6 +3393,13 @@ def _pdf_insert_citation_page(pdf, pages, phrases, r):
         template['citations'] = _insert_after_paragraph(
             template['citations'],
             network_sources,
+            'Urban features:',
+        )
+    flood_source = _flood_data_source_citation(r)
+    if flood_source:
+        template['citations'] = _insert_after_paragraph(
+            template['citations'],
+            flood_source,
             'Urban features:',
         )
     GHSCIC = f'Global Observatory of Healthy and Sustainable Cities {year}'
@@ -4838,6 +4867,51 @@ def _osm_destination_definitions_summary():
     )
 
 
+def _pdf_insert_flood_risk_page(pdf, pages, phrases, r):
+    """Add the flood risk page at the end of the report."""
+    if 'spatial' not in r.config['pdf']['report_template']:
+        return pdf
+    flood = r.config.get('flood') or {}
+    if not flood:
+        return pdf
+    if '75' not in pages:
+        return pdf
+    key = 'pct_flood_risk'
+    figure = _indicator_figure_path(r, key, 'map')
+    if figure is None or not os.path.exists(figure):
+        print(
+            "  Indicator page 'Flood risk' skipped: its map has not been "
+            'generated for this study region.',
+        )
+        return pdf
+    elements = pages['75']
+    for element in elements:
+        if element.get('name') == 'indicator_map':
+            element.update(
+                {
+                    'x1': 10,
+                    'y1': 70,
+                    'x2': 200,
+                    'y2': 250,
+                    'keep_aspect_ratio': 1,
+                },
+            )
+    template = FlexTemplate(pdf, elements=elements)
+    pdf.add_page()
+    if 'indicator_header' in template:
+        template['indicator_header'] = 'Flood risk'
+    if 'indicator_description' in template:
+        buffer_distance = int(flood.get('buffer_distance', 100))
+        template['indicator_description'] = (
+            f'Residential population within {buffer_distance} m of flood '
+            'prone areas'
+        )
+    template['indicator_map'] = figure
+    template['indicator_label'] = _indicator_label(r, phrases, key)
+    template.render()
+    return pdf
+
+
 def _pdf_insert_back_page(pdf, pages, phrases, r):
     # Set up last page
     if r.config['pdf']['report_template'] == 'policy':
@@ -5206,6 +5280,7 @@ def generate_pdf(
     pdf = _pdf_insert_indicator_pages(pdf, pages, phrases, r)
     pdf = _pdf_insert_nature_based_solutions(pdf, pages, phrases, r)
     pdf = _pdf_insert_climate_change_risk_reduction(pdf, pages, phrases, r)
+    pdf = _pdf_insert_flood_risk_page(pdf, pages, phrases, r)
     pdf = _pdf_insert_back_page(pdf, pages, phrases, r)
     # The back page is the last page, so skip its number in the footer.
     pdf._skip_page_number_page = pdf.page_no()

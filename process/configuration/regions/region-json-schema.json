@@ -517,6 +517,42 @@
         },
         "required": ["classification", "citation"]
       },
+      "flood": {
+        "type": ["object", "null"],
+        "description": "Optional flood prone area dataset used to derive the flood risk indicator.  Features are reprojected to the study region CRS and the population within the configured buffer distance is reported.",
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "Path to a spatial flood prone area dataset relative to the project data directory.  A GeoPackage layer may be selected by appending its name after a colon, for example 'flood/areas.gpkg:flood_prone_areas'."
+          },
+          "buffer_distance": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Distance in metres within which population is considered exposed to flood prone areas (default: 100)."
+          },
+          "title": {
+            "type": "string",
+            "description": "Title of the flood prone area dataset, for citation in the report."
+          },
+          "publisher": {
+            "type": "string",
+            "description": "Publisher of the flood prone area dataset, for citation in the report."
+          },
+          "published_date": {
+            "type": ["integer", "string"],
+            "description": "Publication or last-updated date of the flood prone area dataset (YYYYMMDD), for citation in the report."
+          },
+          "url": {
+            "type": "string",
+            "description": "URL for the flood prone area dataset, for citation in the report."
+          },
+          "citation": {
+            "type": "string",
+            "description": "Full citation for the flood prone area dataset."
+          }
+        },
+        "required": ["data"]
+      },
       "gtfs_feeds": {
       "type": ["object", "null"],
       "properties": {

@@ -158,6 +158,7 @@ output:
         - sp_access_public_toilets_rest_points_score
         - sp_access_safe_daily_living_all_score
         - sp_walkability_index
+        - sp_flood_risk_score
     neighbourhood_variables:
         - pct_access_400m_fresh_food_market_score
         - pct_access_400m_convenience_score
@@ -181,6 +182,7 @@ output:
         - pct_access_400m_public_toilets_rest_points_score
         - pct_access_400m_safe_daily_living_all_score
         - local_walkability
+        - pct_flood_risk
     city_variables:
         - pop_pct_access_400m_fresh_food_market_score
         - pop_pct_access_400m_convenience_score
@@ -204,6 +206,7 @@ output:
         - pop_pct_access_400m_public_toilets_rest_points_score
         - pop_pct_access_400m_safe_daily_living_all_score
         - pop_walkability
+        - pop_pct_flood_risk
     extra_unweighted_vars:
         - local_nh_population_density
         - local_nh_intersection_density
@@ -385,6 +388,15 @@ report:
             overlay:
                 layer: destinations
                 where: "dest_name = 'community_facilities'"
+        pct_flood_risk:
+            label: Percentage of population within 100 m of flood prone areas
+            outfile: 'pct_flood_risk_{language}.jpg'
+            range: [-0,100]
+            tick_labels: ['{No}','{Yes}']
+            overlay: flood_prone_areas
+            overlay_colour: '#3B7DD8'
+            overlay_alpha: 0.45
+            overlay_phrase: Flood prone areas
     policy:
         analyses:
           - Presence

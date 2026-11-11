@@ -123,6 +123,7 @@ def analysis(r):
         '_09_urban_covariates.py': 'Collate urban covariates',
         '_10_gtfs_analysis.py': 'Analyse GTFS Feeds',
         '_11_neighbourhood_analysis.py': 'Analyse neighbourhoods',
+        '_11a_flood_risk.py': 'Analyse flood risk',
         '_12_aggregation.py': 'Aggregate region summary analyses',
     }
     pbar = tqdm(
