@@ -56,7 +56,7 @@ class tests(unittest.TestCase):
     """A collection of tests to help ensure functionality."""
 
     def test_0_0a_guhvi_fallback_threshold(self):
-        """GUHVI fallback tolerates up to 20% missing eligible cells."""
+        """GUHVI fallback tolerates up to 5% missing eligible cells."""
         import numpy as np
 
         from subprocesses._utils import guhvi_coverage_gaps
@@ -67,29 +67,30 @@ class tests(unittest.TestCase):
             'NDVI': 'NDVI',
             'NDBI': 'NDBI',
         }
-        eligible = np.ones(5, dtype=bool)
+        eligible = np.ones(100, dtype=bool)
         cell_means = {
-            'LST': np.array([1.0, 2.0, np.nan, 4.0, 5.0]),
-            'inverted': np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
-            'NDVI': np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
-            'NDBI': np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+            'LST': np.ones(100),
+            'inverted': np.ones(100),
+            'NDVI': np.ones(100),
+            'NDBI': np.ones(100),
         }
-        # one missing of five is exactly 20%, which is tolerated
+        # five missing of 100 is exactly 5%, which is tolerated
+        cell_means['LST'][:5] = np.nan
         self.assertEqual(
             guhvi_coverage_gaps(cell_means, eligible, components),
             {},
         )
-        # two missing is 40%, which triggers fallback
-        cell_means['LST'] = np.array([1.0, np.nan, np.nan, 4.0, 5.0])
+        # six missing is 6%, which triggers fallback
+        cell_means['LST'][5] = np.nan
         self.assertEqual(
             guhvi_coverage_gaps(cell_means, eligible, components),
-            {'LST': 0.4},
+            {'LST': 0.06},
         )
         # no eligible cells means every component is incomplete
         self.assertEqual(
             guhvi_coverage_gaps(
                 cell_means,
-                np.zeros(5, dtype=bool),
+                np.zeros(100, dtype=bool),
                 components,
             ),
             {component: 1.0 for component in components},

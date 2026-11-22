@@ -1030,6 +1030,91 @@ GUHVI_FALLBACK_LST_SOURCE = 'ECOSTRESS'
 GUHVI_LAND_OVERLAP_THRESHOLD = 80
 
 
+# Landsat missions used for the heat exposure inputs.  Observations from all
+# missions covering a seasonal window are pooled, increasing the number of
+# clear observations and reducing cloud-related gaps.  Landsat 9 data begin on
+# 31 October 2021; Landsat 8 data begin on 11 April 2013; Landsat 7 data span
+# late May 1999 to January 2024.
+LANDSAT_SENSORS = (
+    {
+        'name': 'Landsat 9',
+        'sr_collection': 'LANDSAT/LC09/C02/T1_L2',
+        'toa_collection': 'LANDSAT/LC09/C02/T1_TOA',
+        'available_from': '2021-10-31',
+        'available_to': None,
+        'thermal_band': 'ST_B10',
+        'albedo_bands': {
+            'blue': 'B2',
+            'red': 'B4',
+            'nir': 'B5',
+            'swir': 'B6',
+            'swir2': 'B7',
+        },
+    },
+    {
+        'name': 'Landsat 8',
+        'sr_collection': 'LANDSAT/LC08/C02/T1_L2',
+        'toa_collection': 'LANDSAT/LC08/C02/T1_TOA',
+        'available_from': '2013-04-11',
+        'available_to': None,
+        'thermal_band': 'ST_B10',
+        'albedo_bands': {
+            'blue': 'B2',
+            'red': 'B4',
+            'nir': 'B5',
+            'swir': 'B6',
+            'swir2': 'B7',
+        },
+    },
+    {
+        'name': 'Landsat 7',
+        'sr_collection': 'LANDSAT/LE07/C02/T1_L2',
+        'toa_collection': 'LANDSAT/LE07/C02/T1_TOA',
+        'available_from': '1999-05-28',
+        'available_to': '2024-01-19',
+        'thermal_band': 'ST_B6',
+        'albedo_bands': {
+            'blue': 'B1',
+            'red': 'B3',
+            'nir': 'B4',
+            'swir': 'B5',
+            'swir2': 'B7',
+        },
+    },
+)
+
+
+def select_landsat_sensors(date_ranges):
+    """Assign each seasonal window to every Landsat mission covering it."""
+    assignments = {}
+    gaps = []
+    for start, end in date_ranges:
+        available = [
+            sensor
+            for sensor in LANDSAT_SENSORS
+            if sensor['available_from'] <= start
+            and (
+                sensor['available_to'] is None
+                or end <= sensor['available_to']
+            )
+        ]
+        if not available:
+            gaps.append((start, end))
+            continue
+        for sensor in available:
+            assignments.setdefault(
+                sensor['name'],
+                {'sensor': sensor, 'ranges': []},
+            )['ranges'].append((start, end))
+    if gaps:
+        missing = '; '.join(f'{start} to {end}' for start, end in gaps)
+        raise ValueError(
+            'No Landsat 7, 8 or 9 coverage for: '
+            f'{missing}. Choose a later target year.',
+        )
+    return list(assignments.values())
+
+
 def filter_date_ranges(collection, date_ranges):
     """Return an ImageCollection filtered to one or more date ranges."""
     if not date_ranges:
@@ -1362,6 +1447,24 @@ def _guhvi_analysis_attempt(  # noqa: C901
         f'{hottest_ranges_text}',
     )
 
+    # Pool every Landsat mission covering each seasonal window, maximising
+    # clear observations for both LST and albedo.
+    landsat_assignments = sorted(
+        select_landsat_sensors(hottest_date_ranges),
+        key=lambda assignment: assignment['sensor']['name'],
+    )
+    landsat_sensor_label = ' + '.join(
+        assignment['sensor']['name'] for assignment in landsat_assignments
+    )
+    print(f'\nLandsat sensors: {landsat_sensor_label}')
+    for assignment in landsat_assignments:
+        print(
+            f'  - {assignment["sensor"]["name"]}: '
+            + ', '.join(
+                f'{start} to {end}' for start, end in assignment['ranges']
+            ),
+        )
+
     # LAND SURFACE TEMPERATURE (LST)
     if lst_source == 'ECOSTRESS':
         lst_sensor_label = 'ECOSTRESS'
@@ -1426,10 +1529,13 @@ def _guhvi_analysis_attempt(  # noqa: C901
             )
         mean_lst = ecostress_collection.select('LST').mean()
     else:
-        lst_sensor_label = 'Landsat 8'
+        lst_sensor_label = landsat_sensor_label
 
-        # Function to mask clouds from Landsat 8 Collection 2, Level 2
-        def mask_landsat8_sr_clouds(image):
+        # Mask clouds from any Landsat Collection 2, Level 2 image.  QA_PIXEL
+        # bits 0-4 (fill, dilated cloud, cirrus, cloud and cloud shadow) must
+        # all be clear, and QA_RADSAT must be zero.  Band names and scaling are
+        # shared by Landsat 7, 8 and 9; only the thermal band name differs.
+        def mask_landsat_sr_clouds(image):
             qa_mask = image.select('QA_PIXEL').bitwiseAnd(
                 int('11111', 2),
             ).eq(0)
@@ -1449,59 +1555,84 @@ def _guhvi_analysis_attempt(  # noqa: C901
                 .updateMask(saturation_mask)
             )
 
-        # Calculate LST
-        def calculate_lst(image):
-            st = image.select('ST_B10')
+        def calculate_lst(image, thermal_band):
+            st = image.select(thermal_band)
             lst = st.subtract(273.15).rename('LST')
             return image.addBands(lst)
 
-        landsat_sr_collection = filter_date_ranges(
-            ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
-            .filterBounds(bounding_box_1600m)
-            .map(mask_landsat8_sr_clouds),
-            hottest_date_ranges,
-        )
-        collection_with_lst = landsat_sr_collection.map(calculate_lst)
-        mean_lst = collection_with_lst.select('LST').mean()
+        def landsat_lst_collection_for(assignment):
+            sensor = assignment['sensor']
+            collection = filter_date_ranges(
+                ee.ImageCollection(sensor['sr_collection']).filterBounds(
+                    bounding_box_1600m,
+                ),
+                assignment['ranges'],
+            ).map(mask_landsat_sr_clouds)
+            return collection.map(
+                lambda image: calculate_lst(
+                    image,
+                    sensor['thermal_band'],
+                ),
+            ).select('LST')
+
+        lst_collections = [
+            landsat_lst_collection_for(assignment)
+            for assignment in landsat_assignments
+        ]
+        collection_with_lst = lst_collections[0]
+        for collection in lst_collections[1:]:
+            collection_with_lst = collection_with_lst.merge(collection)
+        mean_lst = collection_with_lst.mean()
         print(f'  LST source: {lst_sensor_label}')
 
     # Clip the LST image to the cityBoundary
     lst_clipped = mean_lst.clip(urban_study_region_fc)
 
-    # LAND SURFACE ALBEDO (LSA) - LANDSAT-8 TOA
+    # LAND SURFACE ALBEDO (LSA) - LANDSAT TOA
 
-    # Define the mask Landsat function
-    def mask_landsat8_toa_clouds(image):
+    # Define the Landsat TOA cloud mask.  This uses only QA_PIXEL bit 3
+    # (cloud); it does not mask cloud shadow, cirrus or dilated cloud.
+    def mask_landsat_toa_clouds(image):
         qa = image.select('QA_PIXEL')
         mask = qa.bitwiseAnd(1 << 3).eq(0)
         return image.updateMask(mask)
 
-    # Define the albedo function
-    def albedo(image):
+    def albedo(image, bands):
         alb = image.expression(
             '((0.356*blue)+(0.130*red)+(0.373*nir)+(0.085*swir)+(0.072*swir2)- 0.018)/ 1.016',
             {
-                'blue': image.select('B2'),
-                'red': image.select('B4'),
-                'nir': image.select('B5'),
-                'swir': image.select('B6'),
-                'swir2': image.select('B7'),
+                'blue': image.select(bands['blue']),
+                'red': image.select(bands['red']),
+                'nir': image.select(bands['nir']),
+                'swir': image.select(bands['swir']),
+                'swir2': image.select(bands['swir2']),
             },
         )
         return image.addBands(alb.rename('albedo'))
 
-    # Load Landsat 8 TOA collection, apply the albedo function, and filter by
-    # the selected hottest-period windows.
-    landsat_toa_collection = filter_date_ranges(
-        ee.ImageCollection('LANDSAT/LC08/C02/T1_TOA')
-        .filterBounds(bounding_box_1600m)
-        .map(mask_landsat8_toa_clouds)
-        .map(albedo),
-        hottest_date_ranges,
-    )
+    def landsat_albedo_collection_for(assignment):
+        sensor = assignment['sensor']
+        collection = filter_date_ranges(
+            ee.ImageCollection(sensor['toa_collection']).filterBounds(
+                bounding_box_1600m,
+            ),
+            assignment['ranges'],
+        ).map(mask_landsat_toa_clouds)
+        return collection.map(
+            lambda image: albedo(image, sensor['albedo_bands']),
+        ).select('albedo')
 
-    # Select only the albedo band and calculate the mean
-    albedo_mean = landsat_toa_collection.select('albedo').mean()
+    albedo_collections = [
+        landsat_albedo_collection_for(assignment)
+        for assignment in landsat_assignments
+    ]
+    landsat_albedo_collection = albedo_collections[0]
+    for collection in albedo_collections[1:]:
+        landsat_albedo_collection = landsat_albedo_collection.merge(
+            collection,
+        )
+
+    albedo_mean = landsat_albedo_collection.mean()
 
     # Clip to city
     lsa_clipped = albedo_mean.clip(urban_study_region_fc)
@@ -2034,7 +2165,7 @@ def _guhvi_analysis_attempt(  # noqa: C901
     ).to_numpy()
 
     # Automatic coverage check.  A cell is eligible when its representative
-    # point is in the study region and at least 80% of it is land.  Up to 20%
+    # point is in the study region and at least 80% of it is land.  Up to 5%
     # of eligible land cells may be missing a component before the attempt is
     # considered to have a coverage gap.
     eligible = in_study_region & (
@@ -2107,6 +2238,7 @@ def _guhvi_analysis_attempt(  # noqa: C901
                 if composite_years == 1 and lst_source == 'LANDSAT'
                 else 'fallback'
             )
+            gdf['lst_sensor'] = lst_sensor_label
             text_columns = [
                 'hottest_start_date',
                 'hottest_end_date',
@@ -2114,6 +2246,7 @@ def _guhvi_analysis_attempt(  # noqa: C901
                 'guhvi_composite_years',
                 'guhvi_missing_components',
                 'guhvi_fallback',
+                'lst_sensor',
             ]
             band_columns.extend(text_columns)
 
@@ -2392,12 +2525,12 @@ def _guhvi_analysis_attempt(  # noqa: C901
 def guhvi_analysis(r):
     """Run GUHVI with automatic composite-period and LST-source fallback.
 
-    Start with the target-year hottest period and Landsat.  If more than 20%
-    of eligible land cells lack LST, albedo, NDVI or NDBI, retry with the
-    target year and four preceding years using Landsat.  If gaps remain, use
-    ECOSTRESS LST for the five-year composite.  ECOSTRESS only fills LST gaps;
-    if optical layers still have gaps, the ECOSTRESS result is retained with a
-    warning.
+    Start with the target-year hottest period and pooled Landsat observations.
+    If more than 5% of eligible land cells lack LST, albedo, NDVI or NDBI,
+    retry with the target year and four preceding years using pooled Landsat.
+    If gaps remain, use ECOSTRESS LST for the five-year composite.  ECOSTRESS
+    only fills LST gaps; if optical layers still have gaps, the ECOSTRESS
+    result is retained with a warning.
     """
     attempts = [
         (

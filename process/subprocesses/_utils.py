@@ -2513,7 +2513,7 @@ def _sanitize_pdf_filename(filename):
     return cleaned.strip()
 
 
-GUHVI_MAX_MISSING_FRACTION = 0.20
+GUHVI_MAX_MISSING_FRACTION = 0.05
 
 
 def guhvi_coverage_gaps(
@@ -2529,7 +2529,9 @@ def guhvi_coverage_gaps(
     for component, band in required_components.items():
         values = cell_means[band][eligible]
         missing_fraction = 1.0 - float(np.isfinite(values).mean())
-        if missing_fraction > max_missing_fraction:
+        # Use a small tolerance so an exact threshold (e.g. 5 of 100 cells)
+        # is not rejected because of floating-point representation.
+        if missing_fraction > max_missing_fraction + 1e-12:
             gaps[component] = round(missing_fraction, 4)
     return gaps
 
