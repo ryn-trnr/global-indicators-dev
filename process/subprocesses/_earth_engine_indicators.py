@@ -160,6 +160,7 @@ def validate_lpugs_raster(path):
 # pixel data; regions whose output would exceed this must use the tiled path.
 GEE_DIRECT_DOWNLOAD_LIMIT_BYTES = 50331648
 
+
 def download_gee_geotiff(image, out_tif, region, scale, crs, est_bytes, label='LPUGS'):
     """
     Download an Earth Engine image (one or more bands) to a local GeoTIFF.
@@ -1020,22 +1021,67 @@ def lpugs_indicators(r, accessible_nodes):
     )
 
 
-def guhvi_analysis(r):  # noqa: C901
+GUHVI_DEFAULT_COMPOSITE_YEARS = 1
+GUHVI_FALLBACK_COMPOSITE_YEARS = 5
+GUHVI_DEFAULT_LST_SOURCE = 'LANDSAT'
+GUHVI_FALLBACK_LST_SOURCE = 'ECOSTRESS'
+GUHVI_LAND_OVERLAP_THRESHOLD = 80
+GUHVI_MAX_MISSING_FRACTION = 0.20
+
+
+def guhvi_coverage_gaps(
+    cell_means,
+    eligible,
+    required_components,
+    max_missing_fraction=GUHVI_MAX_MISSING_FRACTION,
+):
+    """Return components whose missing share exceeds the fallback threshold."""
+    if not np.any(eligible):
+        return {component: 1.0 for component in required_components}
+    gaps = {}
+    for component, band in required_components.items():
+        values = cell_means[band][eligible]
+        missing_fraction = 1.0 - float(np.isfinite(values).mean())
+        if missing_fraction > max_missing_fraction:
+            gaps[component] = round(missing_fraction, 4)
+    return gaps
+
+
+def filter_date_ranges(collection, date_ranges):
+    """Return an ImageCollection filtered to one or more date ranges."""
+    if not date_ranges:
+        return collection
+    filtered = [
+        collection.filterDate(start_date, end_date)
+        for start_date, end_date in date_ranges
+    ]
+    if len(filtered) == 1:
+        return filtered[0]
+    merged = filtered[0]
+    for part in filtered[1:]:
+        merged = merged.merge(part)
+    return merged
+
+
+def _guhvi_analysis_attempt(  # noqa: C901
+    r,
+    composite_years=GUHVI_DEFAULT_COMPOSITE_YEARS,
+    lst_source=GUHVI_DEFAULT_LST_SOURCE,
+    allow_gaps=False,
+):
     """
-    Generate Global Urban Heat Vulnerability Index (GUHVI) indicators.
+    Run one GUHVI attempt for a composite period and LST source.
 
-    The raw component bands (LST, LSA, NDVI, NDBI, LCZ, population density,
-    vulnerable population, child dependency ratio, SHDI and IMR) are built in
-    Earth Engine and downloaded as a single multi-band GeoTIFF; the per-cell
-    statistics, coastline overlap, normalisation, composites and quintiles are
-    then computed locally.
-
-    1. Generate Heat Exposure Index (HEI), Heat Sensitivity Index (HSI), Adapative Capability Index (ACI).
-    2. Apply normalisation and quintile operation to determine overall heat vulnerability index.
-    3. Upload GUHVI data to PostgreSQL database.
+    Returns a result dictionary describing any missing LST/LSA/NDVI/NDBI
+    coverage.  When gaps are found and ``allow_gaps`` is false, the function
+    returns before writing output tables so the caller can try a fallback.
     """
     print(
         '\nGenerating Global Urban Heat Vulnerability Index (GUHVI) indicators',
+    )
+    print(
+        f'  Attempt: {composite_years}-year hottest-period composite; '
+        f'LST source: {lst_source}',
     )
 
     # Fetch urban study region data
@@ -1166,12 +1212,12 @@ def guhvi_analysis(r):  # noqa: C901
     # CALCULATE HOTTEST THIRD OF THE YEAR (MODIS)
     # https://developers.google.com/earth-engine/datasets/catalog/MODIS_061_MOD11A1
 
-    # Calculate the start and end years using previous target year input
-    start_year = target_year - 5
-
-    # Define the start and end dates as strings
+    # Match the MODIS hottest-period search to the selected composite.  The
+    # Earth Engine end date is exclusive, so target_year + 1 includes the whole
+    # target year.
+    start_year = target_year - (composite_years - 1)
     start_date = f"{start_year}-01-01"
-    end_date = f"{target_year}-01-01"
+    end_date = f"{target_year + 1}-01-01"
 
     # Load MODIS data and add the Celsius band
     modis_collection = (
@@ -1306,51 +1352,135 @@ def guhvi_analysis(r):  # noqa: C901
 
         return start_date, end_date
 
-    # Get window start and end dates for hottest third of the year period
-    hottest_start_date, hottest_end_date = get_date_range_4_months(
-        max_month_with_neighbors,
-        target_year,
+    # Build the hottest-third date ranges for the selected composite period.
+    hottest_years = list(
+        range(target_year - (composite_years - 1), target_year + 1),
+    )
+    hottest_date_ranges = [
+        get_date_range_4_months(max_month_with_neighbors, year)
+        for year in hottest_years
+    ]
+    hottest_start_date = hottest_date_ranges[0][0]
+    hottest_end_date = hottest_date_ranges[-1][1]
+    if composite_years == 1:
+        hottest_years_label = str(target_year)
+        composite_label = 'target-year composite'
+    else:
+        hottest_years_label = (
+            f'{hottest_date_ranges[0][0][:4]}-'
+            f'{hottest_date_ranges[-1][0][:4]}'
+        )
+        composite_label = 'five-year composite'
+    hottest_ranges_text = '; '.join(
+        f'{start} to {end}' for start, end in hottest_date_ranges
     )
     print(
-        f"Hottest Third of the Year: Start = {hottest_start_date}, End = {hottest_end_date}",
+        f'\nHottest Third of the Year ({composite_label}): '
+        f'{hottest_ranges_text}',
     )
 
-    # LAND SURFACE TEMPERATURE (LST) - LANDSAT-8 SR
+    # LAND SURFACE TEMPERATURE (LST)
+    if lst_source == 'ECOSTRESS':
+        lst_sensor_label = 'ECOSTRESS'
 
-    # Function to mask clouds from Landsat 8 Collection 2, Level 2
-    def mask_landsat8_sr_clouds(image):
-        qa_mask = image.select('QA_PIXEL').bitwiseAnd(int('11111', 2)).eq(0)
-        saturation_mask = image.select('QA_RADSAT').eq(0)
+        # Mask poor-quality, cloudy and interpolated ECOSTRESS pixels.
+        def mask_ecostress_lst(image):
+            qc = image.select('QC')
+            good_quality = qc.bitwiseAnd(1 << 0).eq(0)
+            good_error = qc.bitwiseAnd(1 << 1).eq(0)
+            not_interpolated = qc.bitwiseAnd(1 << 2).eq(0)
+            clear_sky = qc.bitwiseAnd(1 << 3).eq(0)
+            not_outlier = qc.bitwiseAnd(1 << 4).eq(0)
+            slope_consistent = qc.bitwiseAnd(1 << 5).eq(0)
+            cloud_free = image.select('cloud').bitwiseAnd(1).eq(0)
+            mask = (
+                good_quality.And(good_error)
+                .And(not_interpolated)
+                .And(clear_sky)
+                .And(not_outlier)
+                .And(slope_consistent)
+                .And(cloud_free)
+            )
+            lst = image.select('LST').subtract(273.15).rename('LST')
+            return image.addBands(lst, None, True).updateMask(mask)
 
-        optical_bands = image.select('SR_B.*').multiply(0.0000275).add(-0.2)
-        thermal_bands = image.select('ST_B.*').multiply(0.00341802).add(149.0)
-
-        return (
-            image.addBands(optical_bands, None, True)
-            .addBands(thermal_bands, None, True)
-            .updateMask(qa_mask)
-            .updateMask(saturation_mask)
+        # Retain daytime overpasses only, approximated from UTC acquisition
+        # time and the study region's longitude.
+        study_longitude = ee.Number(
+            urban_study_region_fc.geometry(1).centroid(1).coordinates().get(0),
         )
 
-    # Map the function over the hottest third of the year
-    landsat_sr_collection = (
-        ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
-        .filterDate(hottest_start_date, hottest_end_date)
-        .filterBounds(bounding_box_1600m)
-        .map(mask_landsat8_sr_clouds)
-    )
+        def add_local_solar_hour(image):
+            utc_hour = ee.Date(
+                image.get('system:time_start'),
+            ).getRelative('hour', 'day')
+            return image.set(
+                'local_solar_hour',
+                utc_hour.add(study_longitude.divide(15)),
+            )
 
-    # Calculate LST
-    def calculate_lst(image):
-        st = image.select('ST_B10')
-        lst = st.subtract(273.15).rename('LST')
-        return image.addBands(lst)
+        ecostress_collection = filter_date_ranges(
+            ee.ImageCollection('NASA/ECOSTRESS/L2T_LSTE/V2')
+            .filterBounds(bounding_box_1600m)
+            .map(add_local_solar_hour)
+            .filter(
+                ee.Filter.And(
+                    ee.Filter.gte('local_solar_hour', 9),
+                    ee.Filter.lte('local_solar_hour', 17),
+                ),
+            ),
+            hottest_date_ranges,
+        ).map(mask_ecostress_lst)
+        ecostress_scene_count = ecostress_collection.size().getInfo()
+        print(
+            f'  LST source: ECOSTRESS ({ecostress_scene_count} daytime '
+            f'scenes in {len(hottest_date_ranges)} seasonal window(s))',
+        )
+        if ecostress_scene_count == 0:
+            raise ValueError(
+                'No daytime ECOSTRESS scenes were found for the hottest-third '
+                'seasonal windows.',
+            )
+        mean_lst = ecostress_collection.select('LST').mean()
+    else:
+        lst_sensor_label = 'Landsat 8'
 
-    # Create a collection attributed with LST data
-    collection_with_lst = landsat_sr_collection.map(calculate_lst)
+        # Function to mask clouds from Landsat 8 Collection 2, Level 2
+        def mask_landsat8_sr_clouds(image):
+            qa_mask = image.select('QA_PIXEL').bitwiseAnd(
+                int('11111', 2),
+            ).eq(0)
+            saturation_mask = image.select('QA_RADSAT').eq(0)
 
-    # Calculate the overall average LST for the 12 monthly maximums
-    mean_lst = collection_with_lst.select('LST').mean()
+            optical_bands = (
+                image.select('SR_B.*').multiply(0.0000275).add(-0.2)
+            )
+            thermal_bands = (
+                image.select('ST_B.*').multiply(0.00341802).add(149.0)
+            )
+
+            return (
+                image.addBands(optical_bands, None, True)
+                .addBands(thermal_bands, None, True)
+                .updateMask(qa_mask)
+                .updateMask(saturation_mask)
+            )
+
+        # Calculate LST
+        def calculate_lst(image):
+            st = image.select('ST_B10')
+            lst = st.subtract(273.15).rename('LST')
+            return image.addBands(lst)
+
+        landsat_sr_collection = filter_date_ranges(
+            ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+            .filterBounds(bounding_box_1600m)
+            .map(mask_landsat8_sr_clouds),
+            hottest_date_ranges,
+        )
+        collection_with_lst = landsat_sr_collection.map(calculate_lst)
+        mean_lst = collection_with_lst.select('LST').mean()
+        print(f'  LST source: {lst_sensor_label}')
 
     # Clip the LST image to the cityBoundary
     lst_clipped = mean_lst.clip(urban_study_region_fc)
@@ -1377,13 +1507,14 @@ def guhvi_analysis(r):  # noqa: C901
         )
         return image.addBands(alb.rename('albedo'))
 
-    # Load Landsat 8 TOA collection, apply the albedo function, and filter by date and region
-    landsat_toa_collection = (
+    # Load Landsat 8 TOA collection, apply the albedo function, and filter by
+    # the selected hottest-period windows.
+    landsat_toa_collection = filter_date_ranges(
         ee.ImageCollection('LANDSAT/LC08/C02/T1_TOA')
-        .filterDate(hottest_start_date, hottest_end_date)
         .filterBounds(bounding_box_1600m)
         .map(mask_landsat8_toa_clouds)
-        .map(albedo)
+        .map(albedo),
+        hottest_date_ranges,
     )
 
     # Select only the albedo band and calculate the mean
@@ -1411,13 +1542,13 @@ def guhvi_analysis(r):  # noqa: C901
             .copyProperties(image, ['system:time_start'])
         )
 
-    # Load Sentinel-2 SR data using dates for the hottest month of the year
-    sentinel_collection_hottest_period = (
+    # Load Sentinel-2 SR data using the selected hottest-period windows.
+    sentinel_collection_hottest_period = filter_date_ranges(
         ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
         .filterBounds(bounding_box_1600m)
-        .filterDate(hottest_start_date, hottest_end_date)
         .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 90))
-        .map(mask_s2_clouds)
+        .map(mask_s2_clouds),
+        hottest_date_ranges,
     )
 
     # Calculate NDVI
@@ -1787,7 +1918,7 @@ def guhvi_analysis(r):  # noqa: C901
     out_tif = os.path.join(
         out_dir,
         f'GHSCI_GUHVI_Raster_{clean_city}_{GUHVI_DOWNLOAD_SCALE}m_'
-        f'{target_year}.tif',
+        f'{target_year}_{lst_source}_{composite_years}yr.tif',
     )
 
     if os.path.exists(out_tif):
@@ -1919,6 +2050,43 @@ def guhvi_analysis(r):  # noqa: C901
         region_geometry,
     ).to_numpy()
 
+    # Automatic coverage check.  A cell is eligible when its representative
+    # point is in the study region and at least 80% of it is land.  Up to 20%
+    # of eligible land cells may be missing a component before the attempt is
+    # considered to have a coverage gap.
+    eligible = in_study_region & (
+        overlap_percentage >= GUHVI_LAND_OVERLAP_THRESHOLD
+    )
+    required_components = {
+        'LST': 'LST',
+        'LSA': 'inverted',
+        'NDVI': 'NDVI',
+        'NDBI': 'NDBI',
+    }
+    missing_components = guhvi_coverage_gaps(
+        cell_means,
+        eligible,
+        required_components,
+    )
+    if missing_components:
+        print(
+            f'  Coverage gaps: {missing_components} '
+            f'(eligible land cells: {int(eligible.sum())})',
+        )
+        if not allow_gaps:
+            return {
+                'gaps': missing_components,
+                'composite_years': composite_years,
+                'lst_source': lst_source,
+                'hottest_start_date': hottest_start_date,
+                'hottest_end_date': hottest_end_date,
+                'hottest_years': hottest_years_label,
+                'hottest_window': (
+                    f'{hottest_date_ranges[0][0]} to '
+                    f'{hottest_date_ranges[0][1]}'
+                ),
+            }
+
     layer_min_max = {}
     for name, _raw_bands, band, _kind in layer_specs:
         if name in guhvi_layers_with_minmax:
@@ -1942,11 +2110,29 @@ def guhvi_analysis(r):  # noqa: C901
         integer_columns = {'LCZ_Filter', 'remapped', 'GUHVI_class'}
         band_columns = [col for col in gdf.columns if col != 'geometry']
 
-        # Add hottest dates to LST table only
+        # Add hottest dates and fallback metadata to the LST table only
         if name == 'lst':
             gdf['hottest_start_date'] = hottest_start_date
             gdf['hottest_end_date'] = hottest_end_date
-            band_columns.extend(['hottest_start_date', 'hottest_end_date'])
+            gdf['guhvi_lst_source'] = lst_source
+            gdf['guhvi_composite_years'] = str(composite_years)
+            gdf['guhvi_missing_components'] = ','.join(
+                sorted(missing_components),
+            )
+            gdf['guhvi_fallback'] = (
+                'default'
+                if composite_years == 1 and lst_source == 'LANDSAT'
+                else 'fallback'
+            )
+            text_columns = [
+                'hottest_start_date',
+                'hottest_end_date',
+                'guhvi_lst_source',
+                'guhvi_composite_years',
+                'guhvi_missing_components',
+                'guhvi_fallback',
+            ]
+            band_columns.extend(text_columns)
 
             column_defs = [
                 (
@@ -1954,7 +2140,7 @@ def guhvi_analysis(r):  # noqa: C901
                     if col in integer_columns
                     else (
                         f"{col} TEXT"
-                        if col in ['hottest_start_date', 'hottest_end_date']
+                        if col in text_columns
                         else f"{col} FLOAT"
                     )
                 )
@@ -2206,6 +2392,86 @@ def guhvi_analysis(r):  # noqa: C901
     print(
         '\nGlobal Urban Heat Vulnerability Index (GUHVI) indicators complete',
     )
+    return {
+        'gaps': missing_components,
+        'composite_years': composite_years,
+        'lst_source': lst_source,
+        'hottest_start_date': hottest_start_date,
+        'hottest_end_date': hottest_end_date,
+        'hottest_years': hottest_years_label,
+        'hottest_window': (
+            f'{hottest_date_ranges[0][0]} to '
+            f'{hottest_date_ranges[0][1]}'
+        ),
+    }
+
+
+def guhvi_analysis(r):
+    """Run GUHVI with automatic composite-period and LST-source fallback.
+
+    Start with the target-year hottest period and Landsat.  If more than 20%
+    of eligible land cells lack LST, albedo, NDVI or NDBI, retry with the
+    target year and four preceding years using Landsat.  If gaps remain, use
+    ECOSTRESS LST for the five-year composite.  ECOSTRESS only fills LST gaps;
+    if optical layers still have gaps, the ECOSTRESS result is retained with a
+    warning.
+    """
+    attempts = [
+        (
+            GUHVI_DEFAULT_COMPOSITE_YEARS,
+            GUHVI_DEFAULT_LST_SOURCE,
+            False,
+        ),
+        (
+            GUHVI_FALLBACK_COMPOSITE_YEARS,
+            GUHVI_DEFAULT_LST_SOURCE,
+            False,
+        ),
+        (
+            GUHVI_FALLBACK_COMPOSITE_YEARS,
+            GUHVI_FALLBACK_LST_SOURCE,
+            True,
+        ),
+    ]
+    last_error = None
+    for index, (years, source, allow_gaps) in enumerate(attempts):
+        try:
+            result = _guhvi_analysis_attempt(
+                r,
+                composite_years=years,
+                lst_source=source,
+                allow_gaps=allow_gaps,
+            )
+        except Exception as error:
+            last_error = error
+            if index == len(attempts) - 1:
+                raise
+            print(
+                f'  GUHVI attempt failed ({years}-year {source}): {error}. '
+                'Trying the next fallback.',
+            )
+            continue
+        if result is None:
+            continue
+        if not result['gaps']:
+            print(
+                f'\nGUHVI selected: {years}-year hottest-period composite; '
+                f'LST source: {source}.',
+            )
+            return result
+        if allow_gaps:
+            print(
+                '\nGUHVI final fallback retained with remaining gaps: '
+                f'{result["gaps"]}.',
+            )
+            return result
+        print(
+            f'\nGUHVI coverage gap for {years}-year {source}: '
+            f'{result["gaps"]}. Trying the next fallback.',
+        )
+    if last_error is not None:
+        raise last_error
+    return None
 
 
 def earth_engine_analysis(r):

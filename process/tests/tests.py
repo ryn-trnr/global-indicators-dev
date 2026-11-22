@@ -55,6 +55,48 @@ from tests.test_rtl_rendering import (  # noqa: F401
 class tests(unittest.TestCase):
     """A collection of tests to help ensure functionality."""
 
+    def test_0_0a_guhvi_fallback_threshold(self):
+        """GUHVI fallback tolerates up to 20% missing eligible cells."""
+        import numpy as np
+
+        from subprocesses._earth_engine_indicators import (
+            guhvi_coverage_gaps,
+        )
+
+        components = {
+            'LST': 'LST',
+            'LSA': 'inverted',
+            'NDVI': 'NDVI',
+            'NDBI': 'NDBI',
+        }
+        eligible = np.ones(5, dtype=bool)
+        cell_means = {
+            'LST': np.array([1.0, 2.0, np.nan, 4.0, 5.0]),
+            'inverted': np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+            'NDVI': np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+            'NDBI': np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+        }
+        # one missing of five is exactly 20%, which is tolerated
+        self.assertEqual(
+            guhvi_coverage_gaps(cell_means, eligible, components),
+            {},
+        )
+        # two missing is 40%, which triggers fallback
+        cell_means['LST'] = np.array([1.0, np.nan, np.nan, 4.0, 5.0])
+        self.assertEqual(
+            guhvi_coverage_gaps(cell_means, eligible, components),
+            {'LST': 0.4},
+        )
+        # no eligible cells means every component is incomplete
+        self.assertEqual(
+            guhvi_coverage_gaps(
+                cell_means,
+                np.zeros(5, dtype=bool),
+                components,
+            ),
+            {component: 1.0 for component in components},
+        )
+
     def test_0_0_valid_yaml(self):
         """Check if example configuration file is valid YAML."""
         valid = sp.call(
