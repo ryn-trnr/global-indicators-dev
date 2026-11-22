@@ -59,9 +59,7 @@ class tests(unittest.TestCase):
         """GUHVI fallback tolerates up to 20% missing eligible cells."""
         import numpy as np
 
-        from subprocesses._earth_engine_indicators import (
-            guhvi_coverage_gaps,
-        )
+        from subprocesses._utils import guhvi_coverage_gaps
 
         components = {
             'LST': 'LST',

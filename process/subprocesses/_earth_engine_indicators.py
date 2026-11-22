@@ -27,6 +27,8 @@ from shapely import wkt
 from shapely.ops import unary_union
 from sqlalchemy import create_engine, text
 
+from _utils import guhvi_coverage_gaps
+
 warnings.filterwarnings('ignore', message="Couldn't find STAC entry for")
 warnings.filterwarnings(
     'ignore',
@@ -1026,25 +1028,6 @@ GUHVI_FALLBACK_COMPOSITE_YEARS = 5
 GUHVI_DEFAULT_LST_SOURCE = 'LANDSAT'
 GUHVI_FALLBACK_LST_SOURCE = 'ECOSTRESS'
 GUHVI_LAND_OVERLAP_THRESHOLD = 80
-GUHVI_MAX_MISSING_FRACTION = 0.20
-
-
-def guhvi_coverage_gaps(
-    cell_means,
-    eligible,
-    required_components,
-    max_missing_fraction=GUHVI_MAX_MISSING_FRACTION,
-):
-    """Return components whose missing share exceeds the fallback threshold."""
-    if not np.any(eligible):
-        return {component: 1.0 for component in required_components}
-    gaps = {}
-    for component, band in required_components.items():
-        values = cell_means[band][eligible]
-        missing_fraction = 1.0 - float(np.isfinite(values).mean())
-        if missing_fraction > max_missing_fraction:
-            gaps[component] = round(missing_fraction, 4)
-    return gaps
 
 
 def filter_date_ranges(collection, date_ranges):

@@ -2513,6 +2513,27 @@ def _sanitize_pdf_filename(filename):
     return cleaned.strip()
 
 
+GUHVI_MAX_MISSING_FRACTION = 0.20
+
+
+def guhvi_coverage_gaps(
+    cell_means,
+    eligible,
+    required_components,
+    max_missing_fraction=GUHVI_MAX_MISSING_FRACTION,
+):
+    """Return components whose missing share exceeds the fallback threshold."""
+    if not np.any(eligible):
+        return {component: 1.0 for component in required_components}
+    gaps = {}
+    for component, band in required_components.items():
+        values = cell_means[band][eligible]
+        missing_fraction = 1.0 - float(np.isfinite(values).mean())
+        if missing_fraction > max_missing_fraction:
+            gaps[component] = round(missing_fraction, 4)
+    return gaps
+
+
 def guhvi_report_suffix(r):
     """Return a filename suffix describing the GUHVI attempt that was used."""
     if 'guhvi_lst' not in getattr(r, 'tables', []):
