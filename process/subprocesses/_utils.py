@@ -3886,8 +3886,10 @@ def _pdf_insert_open_space_policy_page(pdf, pages, phrases, r):
 # process/configuration/osm_destination_definitions.csv.
 HEALTH_SERVICES_DESCRIPTION = (
     'Health services include hospitals, medical centres and clinics, doctors '
-    'and general practitioners (GPs), dentists, pharmacies, and allied health '
-    'services such as physiotherapists and psychotherapists.'
+    'and general practitioners (GPs), dentists, pharmacies, allied health '
+    'services such as physiotherapists and psychotherapists, pathology and '
+    'blood-test collection centres, optometrists and opticians, audiologists '
+    'and hearing services, and radiology and medical imaging services.'
 )
 
 # Pages which report access to each daily living destination category and to
@@ -4333,6 +4335,19 @@ AGE_FRIENDLY_INDICATOR_PAGES = [
         'map',
     ),
     (
+        76,
+        'Access to blue space',
+        'Residential access within 400m of blue space mapped in '
+        'OpenStreetMap, including rivers, streams, canals, drains, ditches, '
+        'lakes, ponds, reservoirs, wetlands, bays, beaches, marinas and '
+        'open-water swimming areas. Swimming pools, water parks, glaciers, '
+        'wastewater treatment plants and water works, water tagged as '
+        'wastewater or sewage, and private or otherwise inaccessible water '
+        'are excluded.',
+        'pct_access_400m_blue_space_score',
+        'map',
+    ),
+    (
         65,
         'Public transport access to health services',
         'Residential access within 400m to the nearest PT stop/station, and '
@@ -4587,11 +4602,21 @@ def _pdf_insert_indicator_pages(pdf, pages, phrases, r):  # noqa: C901
         next_page_number = pdf.page_no() + 1
         if key == safe_pt_key:
             safe_pt_page_number = next_page_number
-        if key == safe_daily_living_key and safe_pt_page_number is not None:
-            description = description.replace(
-                '{safe_pt_page}',
-                str(safe_pt_page_number),
-            )
+        if key == safe_daily_living_key:
+            if safe_pt_page_number is not None:
+                description = description.replace(
+                    '{safe_pt_page}',
+                    str(safe_pt_page_number),
+                )
+            else:
+                # The safe public transport page was skipped (for example,
+                # where no GTFS feed is configured), so the reference to its
+                # page cannot be resolved: remove the parenthetical rather
+                # than leaving the placeholder in the report.
+                description = description.replace(
+                    ' (see page {safe_pt_page})',
+                    '',
+                )
         if kind == 'map':
             for element in pages[f'{page}']:
                 if element.get('name') == 'indicator_map':

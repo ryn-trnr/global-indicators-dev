@@ -175,7 +175,7 @@ Custom blue space is appended to the OpenStreetMap derived layer rather than rep
 
 Blue space also attributes the open space areas near it: `aos_ha_water` records the water within an area, and `aos_blue_distance_m` the distance from it to the nearest blue space.  Both are available in the study region database and to [`public_open_space_variants`](#public_open_space_variants).
 
-> **Blue space does not produce an access indicator of its own.**  The layers are built, and the attributes above are recorded, but no blue space indicator is calculated: the indicators derived from open space are those listed under `Destinations` in `configuration/indicators.yml`, and the set of layers analysed in `_11_neighbourhood_analysis.py` is fixed.  Calculating one would require extending both.  This is the same limitation as applies to a new destination category, described above.
+Blue space produces its own access indicator, reported as `pct_access_400m_blue_space_score` at the grid scale and `pop_pct_access_400m_blue_space_score` for the population-weighted city estimate.  It measures walking access to the edge of the nearest water body, canal bank or shoreline point.  Swimming pools, water parks, glaciers, wastewater treatment plants and water works, water tagged as wastewater or sewage, and private or otherwise inaccessible water are excluded from the layer.
 
 ### `public_open_space_variants`
 
@@ -192,7 +192,7 @@ areas_of_interest:
 
 Each variant produces a layer of access points named `aos_public_<name>_nodes_30m_line`, which you can inspect in the study region geopackage or database.
 
-> **Only the `any` and `large` variants produce indicators.**  A variant you add, and the built-in `water` variant, build their access point layers but are not carried through to indicator estimates, for the same reason as blue space above.  Changing the `large` threshold does change the `public_open_space_large` indicator, because that variant is already analysed.
+> **Only the `any` and `large` variants produce indicators.**  A variant you add, and the built-in `water` variant, build their access point layers but are not carried through to indicator estimates.  The dedicated blue space layer does produce its own access indicator.  Changing the `large` threshold does change the `public_open_space_large` indicator, because that variant is already analysed.
 
 ### `osm_open_space`
 

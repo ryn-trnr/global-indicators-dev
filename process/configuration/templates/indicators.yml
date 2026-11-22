@@ -51,6 +51,17 @@ nearest_node_analyses:
         output_names:
         - public_open_space_any
         - public_open_space_large
+    Blue space:
+        categories: []
+        category_field: null
+        filter_field: null
+        filter_iterations: null
+        geopackage: '{gpkg}'
+        layers:
+        - blue_space_nodes_30m_line
+        notes: null
+        output_names:
+        - blue_space
     Public transport (GTFS):
         categories: null
         category_field: []
@@ -141,6 +152,7 @@ output:
         - sp_access_pt_osm_any_score
         - sp_access_public_open_space_any_score
         - sp_access_public_open_space_large_score
+        - sp_access_blue_space_score
         - sp_access_pt_gtfs_any_score
         - sp_access_pt_gtfs_freq_30_score
         - sp_access_pt_gtfs_freq_20_score
@@ -165,6 +177,7 @@ output:
         - pct_access_400m_pt_osm_any_score
         - pct_access_400m_public_open_space_any_score
         - pct_access_400m_public_open_space_large_score
+        - pct_access_400m_blue_space_score
         - pct_access_400m_pt_gtfs_any_score
         - pct_access_400m_pt_gtfs_freq_30_score
         - pct_access_400m_pt_gtfs_freq_20_score
@@ -189,6 +202,7 @@ output:
         - pop_pct_access_400m_pt_osm_any_score
         - pop_pct_access_400m_public_open_space_any_score
         - pop_pct_access_400m_public_open_space_large_score
+        - pop_pct_access_400m_blue_space_score
         - pop_pct_access_400m_pt_gtfs_any_score
         - pop_pct_access_400m_pt_gtfs_freq_30_score
         - pop_pct_access_400m_pt_gtfs_freq_20_score
@@ -239,6 +253,8 @@ report:
                 p25: 59.22
                 p50: 84.94
                 p75: 90.07
+        pop_pct_access_400m_blue_space_score:
+            title: Blue space
         pop_pct_access_400m_pt_any_score:
             title: Public transport stop
             ghscic_reference:
@@ -309,6 +325,15 @@ report:
             tick_labels: ['{No}','{Yes}']
             overlay: aos_public
             overlay_phrase: Public open space
+        pct_access_400m_blue_space_score:
+            label: blue_space_accessibility_label
+            outfile: 'pct_access_400m_blue_space_score_{language}.jpg'
+            range: [-0,100]
+            tick_labels: ['{No}','{Yes}']
+            overlay: blue_space
+            overlay_colour: '#4FC3F7'
+            overlay_alpha: 0.6
+            overlay_phrase: Blue space
         pct_access_400m_pt_any_score:
             label: Percentage of population with access to any public transport stop or station
             outfile: 'pct_access_400m_pt_any_score_{language}.jpg'

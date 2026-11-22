@@ -136,6 +136,9 @@ A...
 ### Access to daily living amenities score 
 Score of access to fresh food market, convenience and public transport within 400m using an active transport routable street network (/3)
 
+### Access to blue space
+Percentage of population with walking access within 400m of blue space, including rivers, streams, canals, drains, lakes, ponds, reservoirs, wetlands, bays, beaches, marinas and open-water swimming areas. Swimming pools, water parks, glaciers, wastewater treatment plants, water works, water tagged as wastewater or sewage, and private or otherwise inaccessible water are excluded.
+
 ## Walkability
 ### Walkability index
 A sum of standardised scores for neighbourhood population density, street intersection density, and access to amenities.  This is a relative score that can be calculated for within-city comparisons, or using external reference standards (for example, the median results for the GOHSC 25-city study)

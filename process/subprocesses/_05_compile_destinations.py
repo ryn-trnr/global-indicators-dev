@@ -105,9 +105,9 @@ def compile_osm_destinations(r, skip_dest_names=None):
                     ]
                     .apply(
                         lambda x: (
-                            f'{x.key} IS NOT NULL'
+                            f'"{x.key}" IS NOT NULL'
                             if x.value == 'NULL'
-                            else f"{x.key} = '{x.value}'"
+                            else f"\"{x.key}\" = '{x.value}'"
                         ),
                         axis=1,
                     )
@@ -122,9 +122,9 @@ def compile_osm_destinations(r, skip_dest_names=None):
                     ]
                     .apply(
                         lambda x: (
-                            f'{x.key} IS NOT NULL'
+                            f'"{x.key}" IS NOT NULL'
                             if x.value == 'NULL'
-                            else f"{x.key} = '{x.value}'"
+                            else f"\"{x.key}\" = '{x.value}'"
                         ),
                         axis=1,
                     )
@@ -134,9 +134,9 @@ def compile_osm_destinations(r, skip_dest_names=None):
             if condition == 'NOT':
                 not_clauses = [
                     (
-                        f'({x.key} IS NULL)'
+                        f'("{x.key}" IS NULL)'
                         if x.value == 'NULL'
-                        else f"({x.key} != '{x.value}' OR {x.key} IS NULL)"
+                        else f"(\"{x.key}\" != '{x.value}' OR \"{x.key}\" IS NULL)"
                     )
                     for x in ghsci.df_osm_dest[
                         (ghsci.df_osm_dest['dest_name'] == dest)
@@ -159,7 +159,7 @@ def compile_osm_destinations(r, skip_dest_names=None):
             .tolist()
         )
         if dest_keys:
-            tag_args = ', '.join(f"'{k}', d.{k}" for k in dest_keys)
+            tag_args = ', '.join(f"'{k}', d.\"{k}\"" for k in dest_keys)
             tags_expr = f'jsonb_strip_nulls(jsonb_build_object({tag_args}))'
         else:
             tags_expr = "'{}'::jsonb"

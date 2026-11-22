@@ -513,11 +513,20 @@ DESTINATION_PHRASES = {
         '(source: OpenStreetMap)'
     ),
     'blue_space': (
-        'a natural blue space -- a river, canal, drain, lake, reservoir, '
-        'wetland, beach or coast (source: OpenStreetMap or custom data)'
+        'an accessible blue space -- a river, stream, canal, drain, lake, '
+        'pond, reservoir, wetland, bay, beach or coastal water (source: '
+        'OpenStreetMap or custom data)'
     ),
     'public_green_space': (
         'a public green space (source: OpenStreetMap, Google Earth Engine)'
+    ),
+    'health_services': (
+        'health services including hospitals, medical centres and clinics, '
+        'doctors and general practitioners (GPs), dentists, pharmacies, '
+        'allied health services, pathology and sample collection centres, '
+        'optometrists and opticians, audiologists and hearing services, and '
+        'radiology and medical imaging services (source: OpenStreetMap or '
+        'custom data)'
     ),
     'pt_gtfs_any': 'any public transport stop (source: GTFS)',
     'pt_gtfs_freq_30': (
@@ -1314,6 +1323,12 @@ def _reference_parameter_sections():
                 (
                     'Public green space (OpenStreetMap and Earth Engine)',
                     'public_green_space',
+                    'Open space',
+                ),
+                (
+                    'Blue space (rivers, lakes, canals, wetlands, bays and '
+                    'beaches)',
+                    'blue_space',
                     'Open space',
                 ),
                 (

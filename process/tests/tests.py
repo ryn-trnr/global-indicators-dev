@@ -1281,6 +1281,11 @@ class tests(unittest.TestCase):
         for criteria in (polygon, line):
             self.assertIn('NOT COALESCE(', criteria)
             self.assertIn('swimming_pool', criteria)
+            # wastewater infrastructure is not accessible blue space
+            self.assertIn('wastewater_plant', criteria)
+            self.assertIn('water_works', criteria)
+            self.assertIn('wastewater', criteria)
+            self.assertIn('sewage', criteria)
 
         # the built-in node layer variants, and the SQL each derives
         variants = osa.public_open_space_variants({})  # empty region config
@@ -1313,6 +1318,71 @@ class tests(unittest.TestCase):
             'a.aos_blue_distance_m <= 100',
         )
         self.assertEqual(configured['large'], 'a.aos_ha_public > 1.5')
+
+    def test_0_23_blue_space_indicator_configuration(self):
+        """Blue space is analysed, reported after green space, and described."""
+        sys.modules.setdefault('ghsci', sys.modules['subprocesses.ghsci'])
+        import _utils
+        import ghsci
+
+        for file in ('indicators.yml', 'indicators-ee.yml'):
+            indicators = ghsci.load_yaml(f'./configuration/{file}')
+            self.assertIn('Blue space', indicators['nearest_node_analyses'])
+            self.assertEqual(
+                indicators['nearest_node_analyses']['Blue space']['layers'],
+                ['blue_space_nodes_30m_line'],
+            )
+            self.assertIn(
+                'sp_access_blue_space_score',
+                indicators['output']['sample_point_variables'],
+            )
+            self.assertIn(
+                'pct_access_400m_blue_space_score',
+                indicators['output']['neighbourhood_variables'],
+            )
+            self.assertIn(
+                'pop_pct_access_400m_blue_space_score',
+                indicators['output']['city_variables'],
+            )
+            self.assertIn(
+                'pct_access_400m_blue_space_score',
+                indicators['report']['spatial_distribution_figures'],
+            )
+
+        headers = [page[1] for page in _utils.AGE_FRIENDLY_INDICATOR_PAGES]
+        self.assertIn('Access to green space and vegetation', headers)
+        self.assertIn('Access to blue space', headers)
+        self.assertEqual(
+            headers.index('Access to blue space'),
+            headers.index('Access to green space and vegetation') + 1,
+        )
+        blue_page = next(
+            page
+            for page in _utils.AGE_FRIENDLY_INDICATOR_PAGES
+            if page[1] == 'Access to blue space'
+        )
+        self.assertIn('wastewater treatment plants', blue_page[2])
+        self.assertIn('rivers', blue_page[2])
+
+    def test_0_24_health_services_destinations(self):
+        """Health services include pathology, eye/ear and radiology locations."""
+        sys.modules.setdefault('ghsci', sys.modules['subprocesses.ghsci'])
+        import _utils
+        import ghsci
+
+        for term in ('pathology', 'optometrists', 'audiologists', 'radiology'):
+            self.assertIn(term, _utils.HEALTH_SERVICES_DESCRIPTION)
+        df_osm_dest = ghsci.df_osm_dest
+        health = df_osm_dest[df_osm_dest['dest_name'] == 'health_services']
+        self.assertIn('healthcare:speciality', set(health['key']))
+        for value in (
+            'laboratory',
+            'sample_collection',
+            'optometrist',
+            'audiologist',
+            'radiology',
+        ):
+            self.assertIn(value, set(health['value']))
 
     def test_0_22_custom_destination_tags(self):
         """Requested source columns are retained as destination tags."""

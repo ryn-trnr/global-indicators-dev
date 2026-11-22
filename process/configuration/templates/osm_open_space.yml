@@ -1,7 +1,7 @@
 ---
 os_required:
     explanation: These tag keys are assumed to be present on OSM features in order to evaluate values (null or otherwise); if they don't exist, they are created with null values when setting up OSM data
-    criteria: [beach,river,water,waterway,wetland,access,leisure,natural,sport,landuse,playground,boundary,recreation_ground,golf,military,agricultural,forestry,tourism,shop,supermarket,amenity,building,community_centre,place_of_worship,tourism,cuisine,gambling,place,highway,swimming_pool,'garden:type']
+    criteria: [beach,river,water,waterway,wetland,access,leisure,natural,sport,landuse,playground,boundary,recreation_ground,golf,military,agricultural,forestry,tourism,shop,supermarket,amenity,building,community_centre,place_of_worship,tourism,cuisine,gambling,place,highway,swimming_pool,man_made,'garden:type']
 os_inclusion:
     explanation: These are specific inclusion criteria which are to be joined as an OR query, using a specific table alias.  Hence, it is easier to autogenerate this SQL snippet than write it out.  I omitted natural is not null, and sport is not null as these seem to return too many false positives when trying to identify those open spaces which might be public.
     criteria: "p.leisure IS NOT NULL OR p.beach IS NOT NULL OR p.place  =  'square' OR p.highway = 'pedestrian'"
@@ -33,9 +33,9 @@ blue_space_line:
     criteria: |-
         "waterway" IN ('river','canal','stream','drain','ditch','riverbank','brook','rapids','derelict_canal','tidal_channel')
 blue_space_excluded:
-    explanation: SQL expression identifying features to exclude from the blue space layer.  Swimming pools and water parks are matched by the water tags above but are not natural blue space, and features tagged as inaccessible are excluded because blue space is measured as something residents can reach.  This is a far lighter test than the public open space public access criteria; a river bank is not a park, and requiring it to qualify as one would defeat the purpose.
+    explanation: SQL expression identifying features to exclude from the blue space layer.  Swimming pools and water parks are matched by the water tags above but are not natural blue space, and features tagged as inaccessible are excluded because blue space is measured as something residents can reach.  Wastewater treatment plants and water works are infrastructure rather than accessible blue space, so they and water tagged as wastewater or sewage are excluded too.  This is a far lighter test than the public open space public access criteria; a river bank is not a park, and requiring it to qualify as one would defeat the purpose.
     criteria: |-
-        leisure IN ('swimming_pool','water_park') OR "natural" IN ('glacier','underwater_rock','awash_rock') OR "access" IN ('private','no','customers','employee','staff')
+        leisure IN ('swimming_pool','water_park') OR "natural" IN ('glacier','underwater_rock','awash_rock') OR "access" IN ('private','no','customers','employee','staff') OR "man_made" IN ('wastewater_plant','water_works') OR "water" IN ('wastewater','sewage')
 blue_space_min_area_ha:
     explanation: Minimum area in hectares for a blue space polygon to be retained; 0 retains all of them.  Raise it where small ornamental ponds would otherwise dominate the result.  Linear water features are exempt, having no meaningful area.
     criteria: 0

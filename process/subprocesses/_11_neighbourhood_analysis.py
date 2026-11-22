@@ -1113,6 +1113,7 @@ def neighbourhood_analysis(codename):
         'destinations',
         'aos_public_any_nodes_30m_line',
         'aos_public_large_nodes_30m_line',
+        'blue_space_nodes_30m_line',
         'pt_stops_headway',
     ]
     # Conditional check to generate Earth Engine indicators
