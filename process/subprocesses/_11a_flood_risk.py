@@ -138,6 +138,20 @@ def flood_risk(codename):
         print(
             f'\nNo flood data configured for {r.codename}; skipping flood risk analysis.',
         )
+        # The flood indicator is optional, but downstream aggregation expects
+        # every configured sample point variable to be present, retaining an
+        # all-null column where an optional analysis was skipped (as happens
+        # for a region without GTFS data).  Add the column as null so the
+        # sample point schema remains consistent.
+        if r.config['point_summary'] in r.tables:
+            with r.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f'ALTER TABLE {r.config["point_summary"]} '
+                        'ADD COLUMN IF NOT EXISTS sp_flood_risk_score '
+                        'double precision;',
+                    ),
+                )
         script_running_log(r.config, script, task, start)
         r.engine.dispose()
         return None
