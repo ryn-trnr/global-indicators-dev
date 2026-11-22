@@ -2513,18 +2513,48 @@ def _sanitize_pdf_filename(filename):
     return cleaned.strip()
 
 
-def compact_report_filename(phrases, report_template, codename, country_code):
+def guhvi_report_suffix(r):
+    """Return a filename suffix describing the GUHVI attempt that was used."""
+    if 'guhvi_lst' not in getattr(r, 'tables', []):
+        return ''
+    try:
+        row = r.get_df(
+            'SELECT guhvi_lst_source, guhvi_composite_years '
+            'FROM guhvi_lst LIMIT 1',
+        )
+    except Exception:
+        return ''
+    if row is None or row.empty:
+        return ''
+    source = str(row.iloc[0].get('guhvi_lst_source') or '').strip()
+    years = str(row.iloc[0].get('guhvi_composite_years') or '').strip()
+    if not source or not years:
+        return ''
+    source_label = 'Landsat' if source.upper() == 'LANDSAT' else 'ECOSTRESS'
+    period_label = 'target-year' if years == '1' else '5-year'
+    return f'GUHVI {source_label} {period_label} hottest period'
+
+
+def compact_report_filename(
+    phrases,
+    report_template,
+    codename,
+    country_code,
+    suffix='',
+):
     """Short, filesystem-safe report filename for when the descriptive name is too long.
 
     Uses the region codename (already ``CC_City_Year``) plus the template and
     locale codes in place of the translated city/country/title strings, which
     can push the descriptive name past what some filesystems (or cloud-backed
-    bind mounts) accept.
+    bind mounts) accept.  ``suffix`` distinguishes repeated GUHVI attempts.
     """
+    suffix_text = f' {suffix}' if suffix else ''
     name = (
         f"GOHSC {phrases['current_year']} {report_template} {codename} "
         f"{country_code}-{phrases.get('language_code', '')} "
-        f"{phrases['year']}{phrases.get('filename_publication_check', '')}.pdf"
+        f"{phrases['year']}{suffix_text}"
+        f"{phrases.get('filename_publication_check', '')}.pdf"
     )
     return re.sub(r'\s+', ' ', name).strip()
 
@@ -2583,7 +2613,9 @@ def generate_scorecard(
         policy_review,
     )
     # Output report pdf
-    filename = f"GOHSC {phrases['current_year']} - {phrases['title_series_line2'].capitalize()} - {phrases['city_name']} {phrases['country']} {phrases['year']} - {phrases['vernacular']}{phrases['filename_publication_check']}.pdf"
+    report_suffix = guhvi_report_suffix(r)
+    suffix_text = f' - {report_suffix}' if report_suffix else ''
+    filename = f"GOHSC {phrases['current_year']} - {phrases['title_series_line2'].capitalize()} - {phrases['city_name']} {phrases['country']} {phrases['year']} - {phrases['vernacular']}{suffix_text}{phrases['filename_publication_check']}.pdf"
     # ensure filename doesn't inadvertently have multiple spaces
     filename = re.sub(r'\s+', ' ', filename)
     capture_result = save_pdf_layout(
@@ -2595,6 +2627,7 @@ def generate_scorecard(
             report_template,
             r.codename,
             r.config['country_code'],
+            suffix=report_suffix,
         ),
     )
     return capture_result
