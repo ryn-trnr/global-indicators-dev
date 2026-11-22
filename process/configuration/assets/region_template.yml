@@ -319,16 +319,16 @@ network:
   #   sample_interval: 5
   #   ## Minimum length in metres over which a gradient is evaluated
   #   grade_window: 10
-  #   ## Maximum gradient for a gentle walking route: 1/12 (about 8.3%),
-  #   ## following guidance that outdoor ramps rise no more than 1 m per 12 m
-  #   max_grade: 0.08333333333333333
+  #   ## Maximum gradient for a gentle walking route: 1/14 (about 7.1%),
+  #   ## a conservative threshold that outdoor ramps rise no more than 1 m per 14 m
+  #   max_grade: 0.07142857142857142
   #   ## Minimum valid DEM coverage before an edge gradient is considered known
   #   min_coverage: 0.8
   #   ## Citation details recorded in the report
   #   source: Land Information New Zealand via LINZ Data Service
   #   publication_date: 20260918
   #   url: https://data.linz.govt.nz/layer/121859-new-zealand-lidar-1m-dem/
-  ## Citation details for the gentle walking network criterion (1 in 12)
+  ## Citation details for the gentle walking network criterion (1 in 14)
   # gentle_network:
   #   source: New Zealand Government Disability Support Services
   #   publication_date: 20241018

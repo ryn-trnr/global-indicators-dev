@@ -3995,7 +3995,7 @@ def _safe_network_width_description(r):
 def _gentle_grade_label(r, incline=False):
     """Human-readable maximum gradient for gentle walking routes."""
     elevation = (r.config.get('network') or {}).get('elevation') or {}
-    max_grade = float(elevation.get('max_grade', 1 / 12))
+    max_grade = float(elevation.get('max_grade', 1 / 14))
     ratio = 1 / max_grade
     if abs(ratio - round(ratio)) < 0.05:
         ratio_text = f'1 in {round(ratio)}'

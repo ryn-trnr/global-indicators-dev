@@ -394,7 +394,7 @@
               "max_grade": {
                 "type": "number",
                 "exclusiveMinimum": 0,
-                "description": "Maximum rise/run gradient for a link to be considered a gentle walking route.  The default of 1/12 (about 8.3%) follows the New Zealand outdoor ramp guidance of no more than 1 metre rise per 12 metres of length."
+                "description": "Maximum rise/run gradient for a link to be considered a gentle walking route.  The default of 1/14 (about 7.1%) is a conservative threshold of no more than 1 metre rise per 14 metres of length."
               },
               "min_coverage": {
                 "type": "number",

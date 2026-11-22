@@ -1878,7 +1878,7 @@ class Region:
                 elevation['data'] = f"{data_path}/{elevation['data']}"
             elevation.setdefault('sample_interval', 5)
             elevation.setdefault('grade_window', 10)
-            elevation.setdefault('max_grade', 1 / 12)
+            elevation.setdefault('max_grade', 1 / 14)
             elevation.setdefault('min_coverage', 0.8)
             elevation['sample_interval'] = float(elevation['sample_interval'])
             elevation['grade_window'] = float(elevation['grade_window'])
