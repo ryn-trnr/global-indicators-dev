@@ -2223,6 +2223,7 @@ def _guhvi_analysis_attempt(  # noqa: C901
         # Identify LCZ columns and final GUHVI_class which need to remain as whole numbers
         integer_columns = {'LCZ_Filter', 'remapped', 'GUHVI_class'}
         band_columns = [col for col in gdf.columns if col != 'geometry']
+        text_columns = set()
 
         # Add hottest dates and fallback metadata to the LST table only
         if name == 'lst':
@@ -2295,9 +2296,7 @@ def _guhvi_analysis_attempt(  # noqa: C901
                         if col in integer_columns
                         else (
                             str(row[col])
-                            if name == 'lst'
-                            and col
-                            in ['hottest_start_date', 'hottest_end_date']
+                            if col in text_columns
                             else float(row[col])
                         )
                     )
