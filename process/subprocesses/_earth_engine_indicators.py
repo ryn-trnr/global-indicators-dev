@@ -2102,12 +2102,12 @@ def _guhvi_analysis_attempt(  # noqa: C901
         .filterBounds(geometry_1600m)
         .map(lambda feature: feature.intersection(geometry_1600m, 1))
     )
-    water_gdf = gpd.GeoDataFrame.from_features(
-        water_polygons.getInfo()['features'],
-        crs='EPSG:4326',
-    )
-    if len(water_gdf) > 0:
-        water_gdf = water_gdf.to_crs(crs_metric)
+    water_features = water_polygons.getInfo()['features']
+    if water_features:
+        water_gdf = gpd.GeoDataFrame.from_features(
+            water_features,
+            crs='EPSG:4326',
+        ).to_crs(crs_metric)
     else:
         water_gdf = gpd.GeoDataFrame(geometry=[], crs=crs_metric)
     water_mask = rasterise_binary(
